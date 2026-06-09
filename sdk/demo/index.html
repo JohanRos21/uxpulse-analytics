@@ -1,0 +1,287 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>UXPulse SDK Demo</title>
+    <style>
+      :root {
+        color-scheme: light;
+        font-family:
+          Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+        background: #f4f7fb;
+        color: #172033;
+      }
+
+      * {
+        box-sizing: border-box;
+      }
+
+      body {
+        margin: 0;
+        min-height: 100vh;
+      }
+
+      header {
+        background:
+          linear-gradient(135deg, rgba(18, 112, 180, 0.82), rgba(23, 32, 51, 0.92)),
+          url("data:image/svg+xml,%3Csvg width='160' height='160' viewBox='0 0 160 160' xmlns='http://www.w3.org/2000/svg'%3E%3Cg fill='none' stroke='%23ffffff' stroke-opacity='0.26'%3E%3Cpath d='M0 80h160M80 0v160'/%3E%3Ccircle cx='80' cy='80' r='48'/%3E%3Ccircle cx='80' cy='80' r='18'/%3E%3C/g%3E%3C/svg%3E");
+        color: #ffffff;
+        padding: 56px 24px 48px;
+      }
+
+      .wrap {
+        width: min(960px, calc(100% - 32px));
+        margin: 0 auto;
+      }
+
+      h1 {
+        margin: 0 0 12px;
+        font-size: clamp(2rem, 5vw, 4rem);
+        line-height: 1;
+      }
+
+      p {
+        margin: 0;
+        color: #4c5870;
+        line-height: 1.65;
+      }
+
+      header p {
+        max-width: 680px;
+        color: rgba(255, 255, 255, 0.88);
+        font-size: 1.08rem;
+      }
+
+      main {
+        padding: 28px 0 80px;
+      }
+
+      section {
+        margin: 20px 0;
+        padding: 24px;
+        border: 1px solid #dde5ef;
+        border-radius: 8px;
+        background: #ffffff;
+        box-shadow: 0 12px 32px rgba(23, 32, 51, 0.06);
+      }
+
+      h2 {
+        margin: 0 0 12px;
+        font-size: 1.15rem;
+      }
+
+      .actions {
+        display: flex;
+        flex-wrap: wrap;
+        gap: 12px;
+        margin-top: 20px;
+      }
+
+      button {
+        min-height: 44px;
+        border: 0;
+        border-radius: 8px;
+        padding: 0 16px;
+        font: inherit;
+        font-weight: 700;
+        cursor: pointer;
+        transition:
+          transform 160ms ease,
+          box-shadow 160ms ease,
+          background 160ms ease;
+      }
+
+      button:hover {
+        transform: translateY(-1px);
+        box-shadow: 0 8px 20px rgba(23, 32, 51, 0.14);
+      }
+
+      .primary {
+        background: #1270b4;
+        color: #ffffff;
+      }
+
+      .secondary {
+        background: #eaf2f8;
+        color: #14445f;
+      }
+
+      .status {
+        display: grid;
+        grid-template-columns: 12px 1fr;
+        gap: 12px;
+        align-items: start;
+      }
+
+      .dot {
+        width: 12px;
+        height: 12px;
+        margin-top: 7px;
+        border-radius: 999px;
+        background: #23a566;
+      }
+
+      .warning .dot {
+        background: #d68a00;
+      }
+
+      code {
+        border-radius: 6px;
+        background: #eef3f9;
+        padding: 2px 6px;
+        color: #26364f;
+      }
+
+      .event-log {
+        margin-top: 16px;
+        min-height: 132px;
+        padding: 14px;
+        border-radius: 8px;
+        background: #101725;
+        color: #dfe8f4;
+        font-family: "SFMono-Regular", Consolas, "Liberation Mono", monospace;
+        font-size: 0.88rem;
+        overflow: auto;
+      }
+
+      .scroll-zone {
+        min-height: 150vh;
+        display: grid;
+        align-content: space-between;
+        gap: 40px;
+        background:
+          linear-gradient(180deg, #ffffff, #f7fbff),
+          repeating-linear-gradient(0deg, transparent 0 96px, rgba(18, 112, 180, 0.08) 96px 98px);
+      }
+
+      .scroll-marker {
+        padding: 18px;
+        border-left: 4px solid #1270b4;
+        background: #f3f8fc;
+        color: #24344c;
+      }
+
+      @media (max-width: 640px) {
+        header {
+          padding-top: 40px;
+        }
+
+        section {
+          padding: 18px;
+        }
+
+        button {
+          width: 100%;
+        }
+      }
+    </style>
+  </head>
+  <body>
+    <header>
+      <div class="wrap">
+        <h1>UXPulse SDK Demo</h1>
+        <p>
+          Minimal browser page for sending real events to the local UXPulse backend through
+          the compiled TypeScript SDK.
+        </p>
+      </div>
+    </header>
+
+    <main class="wrap">
+      <section id="status-card" class="status">
+        <span class="dot" aria-hidden="true"></span>
+        <div>
+          <h2>Backend Event Check</h2>
+          <p id="status-text">
+            Events should appear in <code>GET /v1/events</code> and
+            <code>GET /v1/events/summary</code> after this page loads and you interact with it.
+          </p>
+        </div>
+      </section>
+
+      <section>
+        <h2>Manual Test Controls</h2>
+        <p>
+          The first button is intentionally simple so the SDK auto click tracker captures a
+          clean click event. The second button sends a custom event with metadata.
+        </p>
+        <div class="actions">
+          <button id="demo-click-button" class="secondary" data-uxpulse-id="demo-click-button">
+            Test Click Tracking
+          </button>
+          <button id="custom-event-button" class="primary" data-uxpulse-id="send-custom-event-button">
+            Send Custom Event
+          </button>
+        </div>
+        <pre id="event-log" class="event-log" aria-live="polite">Waiting for demo activity...</pre>
+      </section>
+
+      <section class="scroll-zone">
+        <div class="scroll-marker">
+          Scroll down this tall section to trigger <code>scroll_depth</code> milestones.
+        </div>
+        <div class="scroll-marker">
+          Halfway there. The SDK stores the highest scroll percentage in event metadata.
+        </div>
+        <div class="scroll-marker">
+          Bottom reached. Check the backend summary for <code>scroll_depth</code>.
+        </div>
+      </section>
+    </main>
+
+    <script type="module">
+      import UXPulse, { track } from "../dist/index.js";
+
+      const UXPULSE_API_KEY = "uxp_tu_ingest_api_key";
+      const UXPULSE_ENDPOINT = "http://127.0.0.1:8002";
+      const apiKeyFromUrl = new URLSearchParams(window.location.search).get("apiKey");
+      const activeApiKey = apiKeyFromUrl || UXPULSE_API_KEY;
+      const isPlaceholderKey = activeApiKey === "uxp_tu_ingest_api_key";
+
+      const statusCard = document.getElementById("status-card");
+      const statusText = document.getElementById("status-text");
+      const eventLog = document.getElementById("event-log");
+      const customEventButton = document.getElementById("custom-event-button");
+
+      function log(message) {
+        const timestamp = new Date().toLocaleTimeString();
+        eventLog.textContent = `[${timestamp}] ${message}\n${eventLog.textContent}`;
+      }
+
+      if (isPlaceholderKey) {
+        statusCard.classList.add("warning");
+        statusText.innerHTML =
+          "Replace <code>UXPULSE_API_KEY</code> with an ingest key or open the demo with <code>?apiKey=&lt;ingest_api_key&gt;</code> before expecting successful events.";
+        log("Using placeholder API key. Requests will fail until a project API key is configured.");
+      } else {
+        log("Project API key loaded. SDK events are being sent to the backend.");
+      }
+
+      UXPulse.init({
+        apiKey: activeApiKey,
+        endpoint: UXPULSE_ENDPOINT,
+        autoTrackPageView: true,
+        autoTrackClicks: true,
+        autoTrackScroll: true,
+      });
+
+      customEventButton.addEventListener("click", async () => {
+        await track("custom_event", {
+          metadata: {
+            source: "sdk_demo",
+            button: "send_custom_event",
+            sent_at: new Date().toISOString(),
+          },
+        });
+        log("Sent custom_event via SDK track().");
+      });
+
+      document.getElementById("demo-click-button").addEventListener("click", () => {
+        log("Clicked Test Click Tracking. Auto click tracking should send a click event.");
+      });
+
+      log("SDK initialized with page_view, click and scroll tracking enabled.");
+    </script>
+  </body>
+</html>

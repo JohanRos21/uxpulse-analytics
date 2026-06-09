@@ -1,0 +1,16 @@
+services:
+  postgres:
+    image: postgres:16
+    container_name: uxpulse_postgres
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: uxpulse_analytics
+      POSTGRES_USER: uxpulse_user
+      POSTGRES_PASSWORD: uxpulse_password
+    ports:
+      - "5434:5432"
+    volumes:
+      - uxpulse_postgres_data:/var/lib/postgresql/data
+
+volumes:
+  uxpulse_postgres_data:
