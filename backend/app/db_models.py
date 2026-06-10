@@ -126,9 +126,14 @@ class Event(Base):
 
     element_id: Mapped[str | None] = mapped_column(String(200), nullable=True)
     element_text: Mapped[str | None] = mapped_column(String(300), nullable=True)
+    element_tag: Mapped[str | None] = mapped_column(String(80), nullable=True)
 
     x: Mapped[float | None] = mapped_column(Float, nullable=True)
     y: Mapped[float | None] = mapped_column(Float, nullable=True)
+    scroll_x: Mapped[float | None] = mapped_column(Float, nullable=True)
+    scroll_y: Mapped[float | None] = mapped_column(Float, nullable=True)
+    document_width: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    document_height: Mapped[int | None] = mapped_column(Integer, nullable=True)
     viewport_width: Mapped[int | None] = mapped_column(Integer, nullable=True)
     viewport_height: Mapped[int | None] = mapped_column(Integer, nullable=True)
 

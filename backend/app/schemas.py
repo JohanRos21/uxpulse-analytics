@@ -51,9 +51,14 @@ class EventCreate(BaseModel):
 
     element_id: str | None = Field(default=None, max_length=200)
     element_text: str | None = Field(default=None, max_length=300)
+    element_tag: str | None = Field(default=None, max_length=80)
 
     x: float | None = None
     y: float | None = None
+    scroll_x: float | None = None
+    scroll_y: float | None = None
+    document_width: int | None = None
+    document_height: int | None = None
     viewport_width: int | None = None
     viewport_height: int | None = None
 
@@ -76,8 +81,13 @@ class EventResponse(BaseModel):
     page_path: str | None
     element_id: str | None
     element_text: str | None
+    element_tag: str | None
     x: float | None
     y: float | None
+    scroll_x: float | None
+    scroll_y: float | None
+    document_width: int | None
+    document_height: int | None
     viewport_width: int | None
     viewport_height: int | None
     occurred_at: datetime
@@ -206,6 +216,40 @@ class ClickHeatmapIntensityZoneResponse(BaseModel):
     intensity: float = Field(ge=0, le=1)
 
 
+class ClickHeatmapDocumentPointResponse(BaseModel):
+    event_id: str
+    project_id: str
+    session_id: str
+    x: float
+    y: float
+    absolute_y: float
+    normalized_x: float | None
+    normalized_document_y: float | None
+    scroll_y: float | None
+    document_height: int | None
+    viewport_height: int | None
+    viewport_segment: Literal["mobile", "tablet", "desktop", "unknown"]
+    page_path: str | None
+    event_type: str
+    element_tag: str | None
+    element_id: str | None
+    element_text: str | None
+
+
+class ClickHeatmapDocumentHeightSummaryResponse(BaseModel):
+    count: int
+    minimum: int | None
+    maximum: int | None
+    average: float | None
+    median: float | None
+
+
+class ClickHeatmapScrollDepthBucketResponse(BaseModel):
+    range: Literal["0-25", "25-50", "50-75", "75-100"]
+    count: int
+    intensity: float = Field(ge=0, le=1)
+
+
 class ClickHeatmapResponse(BaseModel):
     total_clicks: int
     pages: dict[str, int]
@@ -213,3 +257,7 @@ class ClickHeatmapResponse(BaseModel):
     points: list[ClickHeatmapPointResponse]
     viewport_segments: dict[str, int]
     intensity_zones: list[ClickHeatmapIntensityZoneResponse]
+    document_points: list[ClickHeatmapDocumentPointResponse]
+    document_intensity_zones: list[ClickHeatmapIntensityZoneResponse]
+    document_height_summary: ClickHeatmapDocumentHeightSummaryResponse
+    scroll_depth_summary: list[ClickHeatmapScrollDepthBucketResponse]

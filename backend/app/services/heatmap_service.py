@@ -1,5 +1,6 @@
 from collections import Counter
 from collections.abc import Sequence
+from statistics import median
 from typing import Any
 
 from sqlalchemy import case, func, or_
@@ -11,7 +12,9 @@ from app.db_models import Event
 HeatmapData = dict[str, Any]
 GRID_COLUMNS = 12
 GRID_ROWS = 8
+DOCUMENT_GRID_ROWS = 24
 VIEWPORT_SEGMENTS = ("mobile", "tablet", "desktop", "unknown")
+SCROLL_DEPTH_RANGES = ("0-25", "25-50", "50-75", "75-100")
 
 
 def clicks_with_coordinates_query(db: Session) -> Query:
@@ -79,6 +82,11 @@ def normalized_percent(coordinate: float, viewport_size: int) -> float:
     return round(min(100.0, max(0.0, percent)), 2)
 
 
+def normalized_ratio(coordinate: float, total_size: float) -> float:
+    ratio = coordinate / total_size
+    return round(min(1.0, max(0.0, ratio)), 6)
+
+
 def event_viewport_segment(event: Event) -> str:
     if not event_has_valid_viewport(event):
         return "unknown"
@@ -129,6 +137,61 @@ def event_to_heatmap_point(event: Event) -> HeatmapData:
     }
 
 
+def event_document_coordinates(event: Event) -> tuple[float, float | None, float | None]:
+    scroll_x = max(0.0, float(event.scroll_x or 0))
+    scroll_y = max(0.0, float(event.scroll_y or 0))
+    absolute_x = float(event.x) + scroll_x
+    absolute_y = float(event.y) + scroll_y
+
+    if event.document_width and event.document_width > 0:
+        normalized_x = normalized_ratio(absolute_x, event.document_width)
+    elif event.viewport_width and event.viewport_width > 0:
+        normalized_x = normalized_ratio(float(event.x), event.viewport_width)
+    else:
+        normalized_x = None
+
+    if event.document_height and event.document_height > 0:
+        normalized_document_y = normalized_ratio(
+            absolute_y,
+            event.document_height,
+        )
+    elif event.viewport_height and event.viewport_height > 0:
+        normalized_document_y = normalized_ratio(
+            float(event.y),
+            event.viewport_height,
+        )
+    else:
+        normalized_document_y = None
+
+    return absolute_y, normalized_x, normalized_document_y
+
+
+def event_to_document_point(event: Event) -> HeatmapData:
+    absolute_y, normalized_x, normalized_document_y = (
+        event_document_coordinates(event)
+    )
+
+    return {
+        "event_id": event.event_id,
+        "project_id": event.project_id,
+        "session_id": event.session_id,
+        "x": event.x,
+        "y": event.y,
+        "absolute_y": absolute_y,
+        "normalized_x": normalized_x,
+        "normalized_document_y": normalized_document_y,
+        "scroll_y": event.scroll_y,
+        "document_height": event.document_height,
+        "viewport_height": event.viewport_height,
+        "viewport_segment": event_viewport_segment(event),
+        "page_path": event.page_path,
+        "event_type": event.event_type,
+        "element_tag": event.element_tag,
+        "element_id": event.element_id,
+        "element_text": event.element_text,
+    }
+
+
 def build_intensity_zones(events: Sequence[Event]) -> list[HeatmapData]:
     zone_counts: Counter[tuple[int, int]] = Counter()
 
@@ -157,6 +220,104 @@ def build_intensity_zones(events: Sequence[Event]) -> list[HeatmapData]:
             zone_counts.items(),
             key=lambda item: (-item[1], item[0][1], item[0][0]),
         )
+    ]
+
+
+def build_document_intensity_zones(events: Sequence[Event]) -> list[HeatmapData]:
+    zone_counts: Counter[tuple[int, int]] = Counter()
+
+    for event in events:
+        _, normalized_x, normalized_document_y = event_document_coordinates(event)
+        if normalized_x is None or normalized_document_y is None:
+            continue
+
+        column = min(GRID_COLUMNS - 1, int(normalized_x * GRID_COLUMNS))
+        row = min(
+            DOCUMENT_GRID_ROWS - 1,
+            int(normalized_document_y * DOCUMENT_GRID_ROWS),
+        )
+        zone_counts[(column, row)] += 1
+
+    if not zone_counts:
+        return []
+
+    maximum_count = max(zone_counts.values())
+    return [
+        {
+            "column": column,
+            "row": row,
+            "count": count,
+            "intensity": round(count / maximum_count, 4),
+        }
+        for (column, row), count in sorted(
+            zone_counts.items(),
+            key=lambda item: (-item[1], item[0][1], item[0][0]),
+        )
+    ]
+
+
+def build_document_height_summary(events: Sequence[Event]) -> HeatmapData:
+    heights = sorted(
+        event.document_height
+        for event in events
+        if event.document_height and event.document_height > 0
+    )
+
+    if not heights:
+        return {
+            "count": 0,
+            "minimum": None,
+            "maximum": None,
+            "average": None,
+            "median": None,
+        }
+
+    return {
+        "count": len(heights),
+        "minimum": heights[0],
+        "maximum": heights[-1],
+        "average": round(sum(heights) / len(heights), 2),
+        "median": round(float(median(heights)), 2),
+    }
+
+
+def scroll_depth_range(normalized_document_y: float) -> str:
+    depth_percent = normalized_document_y * 100
+
+    if depth_percent < 25:
+        return "0-25"
+
+    if depth_percent < 50:
+        return "25-50"
+
+    if depth_percent < 75:
+        return "50-75"
+
+    return "75-100"
+
+
+def build_scroll_depth_summary(events: Sequence[Event]) -> list[HeatmapData]:
+    counts = Counter({depth_range: 0 for depth_range in SCROLL_DEPTH_RANGES})
+
+    for event in events:
+        _, _, normalized_document_y = event_document_coordinates(event)
+        if normalized_document_y is None:
+            continue
+
+        counts[scroll_depth_range(normalized_document_y)] += 1
+
+    maximum_count = max(counts.values(), default=0)
+    return [
+        {
+            "range": depth_range,
+            "count": counts[depth_range],
+            "intensity": (
+                round(counts[depth_range] / maximum_count, 4)
+                if maximum_count
+                else 0
+            ),
+        }
+        for depth_range in SCROLL_DEPTH_RANGES
     ]
 
 
@@ -201,4 +362,15 @@ def get_click_heatmap(
         "points": [event_to_heatmap_point(event) for event in events],
         "viewport_segments": viewport_segments,
         "intensity_zones": build_intensity_zones(intensity_events),
+        "document_points": [
+            event_to_document_point(event)
+            for event in events
+        ],
+        "document_intensity_zones": build_document_intensity_zones(
+            intensity_events
+        ),
+        "document_height_summary": build_document_height_summary(
+            intensity_events
+        ),
+        "scroll_depth_summary": build_scroll_depth_summary(intensity_events),
     }

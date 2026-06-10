@@ -117,6 +117,7 @@ type UXSignalsSummary = {
 
 type ViewportSegment = "mobile" | "tablet" | "desktop" | "unknown";
 type HeatmapSegmentFilter = "all" | ViewportSegment;
+type HeatmapMode = "viewport" | "full_page";
 
 type ClickHeatmapPoint = {
   event_id: string;
@@ -141,6 +142,40 @@ type ClickHeatmapIntensityZone = {
   intensity: number;
 };
 
+type ClickHeatmapDocumentPoint = {
+  event_id: string;
+  project_id: string;
+  session_id: string;
+  x: number;
+  y: number;
+  absolute_y: number;
+  normalized_x: number | null;
+  normalized_document_y: number | null;
+  scroll_y: number | null;
+  document_height: number | null;
+  viewport_height: number | null;
+  viewport_segment: ViewportSegment;
+  page_path: string | null;
+  event_type: string;
+  element_tag: string | null;
+  element_id: string | null;
+  element_text: string | null;
+};
+
+type ClickHeatmapDocumentHeightSummary = {
+  count: number;
+  minimum: number | null;
+  maximum: number | null;
+  average: number | null;
+  median: number | null;
+};
+
+type ClickHeatmapScrollDepthBucket = {
+  range: "0-25" | "25-50" | "50-75" | "75-100";
+  count: number;
+  intensity: number;
+};
+
 type ClickHeatmapResponse = {
   total_clicks: number;
   pages: Record<string, number>;
@@ -148,6 +183,10 @@ type ClickHeatmapResponse = {
   points: ClickHeatmapPoint[];
   viewport_segments: Record<ViewportSegment, number>;
   intensity_zones: ClickHeatmapIntensityZone[];
+  document_points: ClickHeatmapDocumentPoint[];
+  document_intensity_zones: ClickHeatmapIntensityZone[];
+  document_height_summary: ClickHeatmapDocumentHeightSummary;
+  scroll_depth_summary: ClickHeatmapScrollDepthBucket[];
 };
 
 type ApiError = {
@@ -201,6 +240,21 @@ const emptyClickHeatmap: ClickHeatmapResponse = {
     unknown: 0,
   },
   intensity_zones: [],
+  document_points: [],
+  document_intensity_zones: [],
+  document_height_summary: {
+    count: 0,
+    minimum: null,
+    maximum: null,
+    average: null,
+    median: null,
+  },
+  scroll_depth_summary: [
+    { range: "0-25", count: 0, intensity: 0 },
+    { range: "25-50", count: 0, intensity: 0 },
+    { range: "50-75", count: 0, intensity: 0 },
+    { range: "75-100", count: 0, intensity: 0 },
+  ],
 };
 
 const defaultFunnelSteps: FunnelStepInput[] = [
@@ -462,6 +516,7 @@ export default function Home() {
   const [heatmapView, setHeatmapView] = useState<ClickHeatmapResponse>(emptyClickHeatmap);
   const [heatmapPage, setHeatmapPage] = useState("");
   const [heatmapSegment, setHeatmapSegment] = useState<HeatmapSegmentFilter>("all");
+  const [heatmapMode, setHeatmapMode] = useState<HeatmapMode>("viewport");
   const [isHeatmapLoading, setIsHeatmapLoading] = useState(false);
   const [heatmapError, setHeatmapError] = useState<ApiError | null>(null);
   const [funnelResult, setFunnelResult] = useState<FunnelAnalyzeResponse | null>(null);
@@ -532,6 +587,69 @@ export default function Home() {
       ),
     [heatmapView.points],
   );
+  const documentPreviewPoints = useMemo(
+    () =>
+      heatmapView.document_points.filter(
+        (
+          point,
+        ): point is ClickHeatmapDocumentPoint & {
+          normalized_x: number;
+          normalized_document_y: number;
+        } =>
+          point.normalized_x !== null
+          && point.normalized_document_y !== null,
+      ),
+    [heatmapView.document_points],
+  );
+  const documentHeight = (
+    heatmapView.document_height_summary.median
+    ?? heatmapView.document_height_summary.average
+  );
+  const aboveFoldClicks = useMemo(
+    () =>
+      heatmapView.document_points.filter(
+        (point) =>
+          point.viewport_height !== null
+          && point.viewport_height > 0
+          && point.absolute_y <= point.viewport_height,
+      ).length,
+    [heatmapView.document_points],
+  );
+  const belowFoldClicks = useMemo(
+    () =>
+      heatmapView.document_points.filter(
+        (point) =>
+          point.viewport_height !== null
+          && point.viewport_height > 0
+          && point.absolute_y > point.viewport_height,
+      ).length,
+    [heatmapView.document_points],
+  );
+  const hottestDocumentZone = useMemo(
+    () =>
+      [...heatmapView.document_intensity_zones]
+        .sort((first, second) => second.count - first.count)[0],
+    [heatmapView.document_intensity_zones],
+  );
+  const foldPositionPercent = useMemo(() => {
+    const foldRatios = heatmapView.document_points
+      .filter(
+        (point) =>
+          point.viewport_height !== null
+          && point.viewport_height > 0
+          && point.document_height !== null
+          && point.document_height > 0,
+      )
+      .map((point) => (point.viewport_height! / point.document_height!) * 100);
+
+    if (!foldRatios.length) {
+      return null;
+    }
+
+    const averageRatio =
+      foldRatios.reduce((total, ratio) => total + ratio, 0) / foldRatios.length;
+    return Math.min(100, Math.max(4, averageRatio));
+  }, [heatmapView.document_points]);
 
   const eventTypeOptions = useMemo(
     () => Array.from(new Set(events.map((event) => event.event_type))).sort(),
@@ -596,6 +714,7 @@ export default function Home() {
       setHeatmapView(emptyClickHeatmap);
       setHeatmapPage("");
       setHeatmapSegment("all");
+      setHeatmapMode("viewport");
       setHeatmapError(null);
       setError(null);
       setLastUpdated(null);
@@ -812,6 +931,7 @@ export default function Home() {
     setHeatmapView(emptyClickHeatmap);
     setHeatmapPage("");
     setHeatmapSegment("all");
+    setHeatmapMode("viewport");
     setHeatmapError(null);
     setFunnelResult(null);
     setFunnelError(null);
@@ -1428,13 +1548,13 @@ export default function Home() {
         <section className="space-y-4">
           <div className="flex flex-col gap-3 xl:flex-row xl:items-end xl:justify-between">
             <div>
-              <h2 className="text-lg font-semibold text-slate-950">Click Heatmap V2</h2>
+              <h2 className="text-lg font-semibold text-slate-950">Click Heatmap V3</h2>
               <p className="mt-1 text-sm text-slate-500">
-                Page-level click density with viewport segmentation
+                Viewport and full-page click density with scroll-aware positioning
               </p>
             </div>
 
-            <div className="grid w-full gap-3 sm:grid-cols-2 xl:w-auto">
+            <div className="grid w-full gap-3 sm:grid-cols-3 xl:w-auto">
               <label className="w-full xl:w-72">
                 <span className="mb-1.5 block text-xs font-semibold uppercase tracking-wide text-slate-500">
                   Page
@@ -1472,8 +1592,41 @@ export default function Home() {
                   <option value="desktop">Desktop</option>
                   <option value="tablet">Tablet</option>
                   <option value="mobile">Mobile</option>
+                  <option value="unknown">Unknown</option>
                 </select>
               </label>
+
+              <div className="w-full xl:w-56">
+                <span className="mb-1.5 block text-xs font-semibold uppercase tracking-wide text-slate-500">
+                  Heatmap mode
+                </span>
+                <div className="grid h-10 grid-cols-2 rounded-lg border border-slate-300 bg-white p-1">
+                  <button
+                    type="button"
+                    onClick={() => setHeatmapMode("viewport")}
+                    aria-pressed={heatmapMode === "viewport"}
+                    className={`rounded-md px-3 text-sm font-semibold transition ${
+                      heatmapMode === "viewport"
+                        ? "bg-slate-950 text-white"
+                        : "text-slate-600 hover:bg-slate-100"
+                    }`}
+                  >
+                    Viewport
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => setHeatmapMode("full_page")}
+                    aria-pressed={heatmapMode === "full_page"}
+                    className={`rounded-md px-3 text-sm font-semibold transition ${
+                      heatmapMode === "full_page"
+                        ? "bg-slate-950 text-white"
+                        : "text-slate-600 hover:bg-slate-100"
+                    }`}
+                  >
+                    Full page
+                  </button>
+                </div>
+              </div>
             </div>
           </div>
 
@@ -1521,6 +1674,43 @@ export default function Home() {
               accent="violet"
             />
           </div>
+
+          {heatmapMode === "full_page" ? (
+            <div className="grid gap-4 sm:grid-cols-2 xl:grid-cols-4">
+              <MetricCard
+                label="Median Document Height"
+                value={documentHeight !== null ? `${Math.round(documentHeight).toLocaleString()} px` : "Unknown"}
+                detail={`${heatmapView.document_height_summary.count.toLocaleString()} clicks with document height`}
+                accent="sky"
+              />
+              <MetricCard
+                label="Above the Fold"
+                value={aboveFoldClicks.toLocaleString()}
+                detail="Clicks inside the first viewport"
+                accent="emerald"
+              />
+              <MetricCard
+                label="Below the Fold"
+                value={belowFoldClicks.toLocaleString()}
+                detail="Clicks after the first viewport"
+                accent="amber"
+              />
+              <MetricCard
+                label="Hottest Page Zone"
+                value={
+                  hottestDocumentZone
+                    ? `C${hottestDocumentZone.column + 1} / R${hottestDocumentZone.row + 1}`
+                    : "No zone"
+                }
+                detail={
+                  hottestDocumentZone
+                    ? `${hottestDocumentZone.count.toLocaleString()} clicks`
+                    : "No normalized document points"
+                }
+                accent="violet"
+              />
+            </div>
+          ) : null}
 
           {heatmapError ? (
             <div
@@ -1635,57 +1825,162 @@ export default function Home() {
 
             <div className="p-4 sm:p-5">
               {heatmapView.total_clicks ? (
-                <div className="relative aspect-video w-full overflow-hidden rounded-lg border border-slate-300 bg-slate-50">
-                  {[25, 50, 75].map((position) => (
-                    <div
-                      key={`vertical-${position}`}
-                      className="absolute inset-y-0 w-px bg-slate-200"
-                      style={{ left: `${position}%` }}
-                    />
-                  ))}
-                  {[25, 50, 75].map((position) => (
-                    <div
-                      key={`horizontal-${position}`}
-                      className="absolute inset-x-0 h-px bg-slate-200"
-                      style={{ top: `${position}%` }}
-                    />
-                  ))}
-                  {heatmapView.intensity_zones.map((zone) => (
-                    <span
-                      key={`zone-${zone.column}-${zone.row}`}
-                      className="absolute bg-rose-500"
-                      style={{
-                        left: `${(zone.column / 12) * 100}%`,
-                        top: `${(zone.row / 8) * 100}%`,
-                        width: `${100 / 12}%`,
-                        height: `${100 / 8}%`,
-                        opacity: 0.08 + zone.intensity * 0.42,
-                      }}
-                      title={`Zone ${zone.column + 1}, ${zone.row + 1}: ${zone.count} clicks`}
-                    />
-                  ))}
-                  {heatmapPreviewPoints.map((point) => (
-                    <span
-                      key={point.event_id}
-                      className="absolute h-3 w-3 -translate-x-1/2 -translate-y-1/2 rounded-full border border-rose-700/50 bg-rose-500/60 shadow-sm"
-                      style={{
-                        left: `${point.x_percent}%`,
-                        top: `${point.y_percent}%`,
-                      }}
-                      title={`${displayElementRanking(point.element_id || "coordinate_zone")} at ${point.x_percent}%, ${point.y_percent}%`}
-                    />
-                  ))}
-                  {!heatmapPreviewPoints.length ? (
-                    <div className="absolute inset-0 flex items-center justify-center px-4 text-center text-sm font-medium text-slate-500">
-                      Clicks in this segment do not have a complete viewport.
+                heatmapMode === "viewport" ? (
+                  <div className="relative aspect-video w-full overflow-hidden rounded-lg border border-slate-300 bg-slate-50">
+                    {[25, 50, 75].map((position) => (
+                      <div
+                        key={`vertical-${position}`}
+                        className="absolute inset-y-0 w-px bg-slate-200"
+                        style={{ left: `${position}%` }}
+                      />
+                    ))}
+                    {[25, 50, 75].map((position) => (
+                      <div
+                        key={`horizontal-${position}`}
+                        className="absolute inset-x-0 h-px bg-slate-200"
+                        style={{ top: `${position}%` }}
+                      />
+                    ))}
+                    {heatmapView.intensity_zones.map((zone) => (
+                      <span
+                        key={`zone-${zone.column}-${zone.row}`}
+                        className="absolute bg-rose-500"
+                        style={{
+                          left: `${(zone.column / 12) * 100}%`,
+                          top: `${(zone.row / 8) * 100}%`,
+                          width: `${100 / 12}%`,
+                          height: `${100 / 8}%`,
+                          opacity: 0.08 + zone.intensity * 0.42,
+                        }}
+                        title={`Zone ${zone.column + 1}, ${zone.row + 1}: ${zone.count} clicks`}
+                      />
+                    ))}
+                    {heatmapPreviewPoints.map((point) => (
+                      <span
+                        key={point.event_id}
+                        className="absolute h-3 w-3 -translate-x-1/2 -translate-y-1/2 rounded-full border border-rose-700/50 bg-rose-500/60 shadow-sm"
+                        style={{
+                          left: `${point.x_percent}%`,
+                          top: `${point.y_percent}%`,
+                        }}
+                        title={`${displayElementRanking(point.element_id || "coordinate_zone")} at ${point.x_percent}%, ${point.y_percent}%`}
+                      />
+                    ))}
+                    {!heatmapPreviewPoints.length ? (
+                      <div className="absolute inset-0 flex items-center justify-center px-4 text-center text-sm font-medium text-slate-500">
+                        Clicks in this segment do not have a complete viewport.
+                      </div>
+                    ) : null}
+                  </div>
+                ) : (
+                  <div className="max-h-[720px] overflow-y-auto rounded-lg border border-slate-300 bg-slate-100 p-3 sm:p-5">
+                    <div className="relative mx-auto h-[1080px] w-full max-w-2xl overflow-hidden border border-slate-300 bg-white shadow-sm">
+                      {[25, 50, 75].map((position) => (
+                        <div
+                          key={`document-vertical-${position}`}
+                          className="absolute inset-y-0 w-px bg-slate-100"
+                          style={{ left: `${position}%` }}
+                        />
+                      ))}
+                      {[25, 50, 75].map((position) => (
+                        <div
+                          key={`document-horizontal-${position}`}
+                          className="absolute inset-x-0 h-px bg-slate-200"
+                          style={{ top: `${position}%` }}
+                        >
+                          <span className="absolute right-2 -translate-y-full pb-1 text-[10px] font-semibold text-slate-400">
+                            {position}% depth
+                          </span>
+                        </div>
+                      ))}
+                      {heatmapView.document_intensity_zones.map((zone) => (
+                        <span
+                          key={`document-zone-${zone.column}-${zone.row}`}
+                          className="absolute bg-rose-500"
+                          style={{
+                            left: `${(zone.column / 12) * 100}%`,
+                            top: `${(zone.row / 24) * 100}%`,
+                            width: `${100 / 12}%`,
+                            height: `${100 / 24}%`,
+                            opacity: 0.07 + zone.intensity * 0.43,
+                          }}
+                          title={`Document zone ${zone.column + 1}, ${zone.row + 1}: ${zone.count} clicks`}
+                        />
+                      ))}
+                      {foldPositionPercent !== null ? (
+                        <div
+                          className="absolute inset-x-0 z-10 border-t-2 border-dashed border-sky-600"
+                          style={{ top: `${foldPositionPercent}%` }}
+                        >
+                          <span className="absolute left-2 top-1 rounded bg-sky-600 px-2 py-1 text-[10px] font-semibold uppercase text-white">
+                            First viewport fold
+                          </span>
+                        </div>
+                      ) : null}
+                      {documentPreviewPoints.map((point) => (
+                        <span
+                          key={point.event_id}
+                          className="absolute z-20 h-3 w-3 -translate-x-1/2 -translate-y-1/2 rounded-full border border-rose-800/60 bg-rose-500/70 shadow-sm"
+                          style={{
+                            left: `${point.normalized_x * 100}%`,
+                            top: `${point.normalized_document_y * 100}%`,
+                          }}
+                          title={`${displayElementRanking(point.element_id || "coordinate_zone")} at ${Math.round(point.normalized_document_y * 100)}% document depth`}
+                        />
+                      ))}
+                      {!documentPreviewPoints.length ? (
+                        <div className="absolute inset-0 flex items-center justify-center px-4 text-center text-sm font-medium text-slate-500">
+                          Clicks in this segment do not have enough geometry for full-page positioning.
+                        </div>
+                      ) : null}
                     </div>
-                  ) : null}
-                </div>
+                  </div>
+                )
               ) : (
                 <EmptyState>No click points available for this page.</EmptyState>
               )}
             </div>
           </article>
+
+          {heatmapMode === "full_page" ? (
+            <article className="rounded-lg border border-slate-200 bg-white p-5 shadow-sm">
+              <div className="flex flex-col gap-1 sm:flex-row sm:items-end sm:justify-between">
+                <div>
+                  <h3 className="text-base font-semibold">Clicks by Scroll Depth</h3>
+                  <p className="mt-1 text-sm text-slate-500">
+                    Distribution across the normalized full document height
+                  </p>
+                </div>
+                <p className="text-xs font-semibold uppercase text-slate-400">
+                  12 x 24 document grid
+                </p>
+              </div>
+
+              <div className="mt-5 grid gap-3 sm:grid-cols-2 xl:grid-cols-4">
+                {heatmapView.scroll_depth_summary.map((bucket) => (
+                  <div
+                    key={bucket.range}
+                    className="rounded-lg border border-slate-200 bg-slate-50 p-4"
+                  >
+                    <div className="flex items-center justify-between gap-3">
+                      <span className="text-sm font-semibold text-slate-700">
+                        {bucket.range}%
+                      </span>
+                      <span className="text-sm font-semibold tabular-nums text-slate-950">
+                        {bucket.count.toLocaleString()}
+                      </span>
+                    </div>
+                    <div className="mt-3 h-2 overflow-hidden rounded-full bg-slate-200">
+                      <div
+                        className="h-full rounded-full bg-rose-500"
+                        style={{ width: `${bucket.intensity * 100}%` }}
+                      />
+                    </div>
+                  </div>
+                ))}
+              </div>
+            </article>
+          ) : null}
 
           <article className="rounded-lg border border-slate-200 bg-white shadow-sm">
             <div className="border-b border-slate-200 p-4 sm:p-5">

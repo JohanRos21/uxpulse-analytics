@@ -11,8 +11,13 @@ export type TrackData = {
   page_path?: string | undefined;
   element_id?: string | null | undefined;
   element_text?: string | null | undefined;
+  element_tag?: string | null | undefined;
   x?: number | null | undefined;
   y?: number | null | undefined;
+  scroll_x?: number | null | undefined;
+  scroll_y?: number | null | undefined;
+  document_width?: number | null | undefined;
+  document_height?: number | null | undefined;
   viewport_width?: number | null | undefined;
   viewport_height?: number | null | undefined;
   user_agent?: string | null | undefined;
@@ -150,6 +155,37 @@ function getViewportData(): Pick<TrackData, "viewport_width" | "viewport_height"
   };
 }
 
+function getDocumentData(): Pick<
+  TrackData,
+  "scroll_x" | "scroll_y" | "document_width" | "document_height"
+> {
+  if (!isBrowser()) {
+    return {};
+  }
+
+  const documentElement = document.documentElement;
+  const body = document.body;
+
+  return {
+    scroll_x: window.scrollX || documentElement.scrollLeft || body.scrollLeft || 0,
+    scroll_y: window.scrollY || documentElement.scrollTop || body.scrollTop || 0,
+    document_width: Math.max(
+      body.scrollWidth,
+      body.offsetWidth,
+      documentElement.clientWidth,
+      documentElement.scrollWidth,
+      documentElement.offsetWidth,
+    ),
+    document_height: Math.max(
+      body.scrollHeight,
+      body.offsetHeight,
+      documentElement.clientHeight,
+      documentElement.scrollHeight,
+      documentElement.offsetHeight,
+    ),
+  };
+}
+
 function sanitizeText(value: string | null | undefined): string | null {
   if (!value) {
     return null;
@@ -270,8 +306,13 @@ async function sendEvent(eventType: string, data: TrackData = {}): Promise<void>
     page_path: data.page_path,
     element_id: data.element_id,
     element_text: data.element_text ? data.element_text.slice(0, MAX_TEXT_LENGTH) : data.element_text,
+    element_tag: data.element_tag,
     x: data.x,
     y: data.y,
+    scroll_x: data.scroll_x,
+    scroll_y: data.scroll_y,
+    document_width: data.document_width,
+    document_height: data.document_height,
     viewport_width: data.viewport_width,
     viewport_height: data.viewport_height,
     user_agent: data.user_agent ?? window.navigator.userAgent,
@@ -442,8 +483,10 @@ export async function trackClick(event: MouseEvent): Promise<void> {
   await sendEvent("click", {
     ...getPageData(),
     ...getViewportData(),
+    ...getDocumentData(),
     element_id: getSafeElementId(element),
     element_text: getSafeElementText(element),
+    element_tag: element.tagName.toLowerCase(),
     x: event.clientX,
     y: event.clientY,
   });

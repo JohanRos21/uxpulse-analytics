@@ -21,14 +21,24 @@ def click_event(
     viewport_width: int | None,
     viewport_height: int | None,
     element_id: str | None = None,
+    element_tag: str | None = None,
+    scroll_x: float | None = None,
+    scroll_y: float | None = None,
+    document_width: int | None = None,
+    document_height: int | None = None,
 ) -> dict:
     return {
         "session_id": session_id,
         "event_type": "click",
         "page_path": page_path,
         "element_id": element_id,
+        "element_tag": element_tag,
         "x": x,
         "y": y,
+        "scroll_x": scroll_x,
+        "scroll_y": scroll_y,
+        "document_width": document_width,
+        "document_height": document_height,
         "viewport_width": viewport_width,
         "viewport_height": viewport_height,
         "occurred_at": occurred_at,
@@ -50,6 +60,11 @@ def main() -> None:
             viewport_width=1000,
             viewport_height=800,
             element_id="checkout-button",
+            element_tag="button",
+            scroll_x=20,
+            scroll_y=0,
+            document_width=1000,
+            document_height=2400,
         ),
         click_event(
             "heatmap-pricing",
@@ -60,6 +75,11 @@ def main() -> None:
             viewport_width=1000,
             viewport_height=800,
             element_id="checkout-button",
+            element_tag="button",
+            scroll_x=0,
+            scroll_y=500,
+            document_width=1000,
+            document_height=2400,
         ),
         click_event(
             "heatmap-pricing",
@@ -70,6 +90,11 @@ def main() -> None:
             viewport_width=1000,
             viewport_height=800,
             element_id="plan-card",
+            element_tag="article",
+            scroll_x=0,
+            scroll_y=1000,
+            document_width=1000,
+            document_height=2400,
         ),
         click_event(
             "heatmap-home",
@@ -80,6 +105,11 @@ def main() -> None:
             viewport_width=1280,
             viewport_height=720,
             element_id="hero-button",
+            element_tag="button",
+            scroll_x=0,
+            scroll_y=0,
+            document_width=1280,
+            document_height=1800,
         ),
         click_event(
             "heatmap-home",
@@ -89,6 +119,11 @@ def main() -> None:
             y=360,
             viewport_width=1280,
             viewport_height=720,
+            element_tag="main",
+            scroll_x=0,
+            scroll_y=720,
+            document_width=1280,
+            document_height=1800,
         ),
         click_event(
             "heatmap-mobile",
@@ -99,6 +134,11 @@ def main() -> None:
             viewport_width=390,
             viewport_height=844,
             element_id="mobile-checkout",
+            element_tag="button",
+            scroll_x=0,
+            scroll_y=1600,
+            document_width=390,
+            document_height=2600,
         ),
         click_event(
             "heatmap-invalid",
@@ -116,12 +156,25 @@ def main() -> None:
             "occurred_at": iso_at(base, 7),
         },
     ]
-    request_ok(
+    created_events = request_ok(
         "POST",
         "/v1/events/batch",
         token=ingest_key,
         json={"events": events},
+    ).json()
+    stored_click = created_events[0]
+    assert_true(stored_click["element_tag"] == "button", "Element tag was not stored")
+    assert_true(stored_click["scroll_x"] == 20, "Scroll x was not stored")
+    assert_true(stored_click["scroll_y"] == 0, "Scroll y was not stored")
+    assert_true(
+        stored_click["document_width"] == 1000,
+        "Document width was not stored",
     )
+    assert_true(
+        stored_click["document_height"] == 2400,
+        "Document height was not stored",
+    )
+    print("[OK] Scroll-aware click fields are stored")
 
     heatmap = request_ok(
         "GET",
@@ -163,6 +216,45 @@ def main() -> None:
         sum(zone["count"] for zone in heatmap["intensity_zones"]) == 6,
         "Only clicks with complete viewports should populate intensity zones",
     )
+    assert_true(
+        len(heatmap["document_points"]) == 7,
+        "Expected document points for every heatmap point",
+    )
+    assert_true(
+        bool(heatmap["document_intensity_zones"]),
+        "Expected full-page intensity zones",
+    )
+    assert_true(
+        sum(zone["count"] for zone in heatmap["document_intensity_zones"]) == 6,
+        "Only clicks with normalizable geometry should populate document zones",
+    )
+    assert_true(
+        max(
+            zone["intensity"]
+            for zone in heatmap["document_intensity_zones"]
+        )
+        == 1,
+        "Maximum document zone intensity must be 1",
+    )
+    height_summary = heatmap["document_height_summary"]
+    assert_true(height_summary["count"] == 6, "Wrong document height count")
+    assert_true(height_summary["minimum"] == 1800, "Wrong minimum document height")
+    assert_true(height_summary["maximum"] == 2600, "Wrong maximum document height")
+    assert_true(height_summary["median"] == 2400, "Wrong median document height")
+    depth_counts = {
+        bucket["range"]: bucket["count"]
+        for bucket in heatmap["scroll_depth_summary"]
+    }
+    assert_true(
+        depth_counts
+        == {
+            "0-25": 2,
+            "25-50": 1,
+            "50-75": 2,
+            "75-100": 1,
+        },
+        f"Unexpected scroll depth summary: {depth_counts}",
+    )
 
     normalized_point = next(
         point
@@ -185,7 +277,29 @@ def main() -> None:
         and unknown_point["y_percent"] is None,
         "Missing viewport should not produce normalized coordinates",
     )
-    print("[OK] Read key receives valid click heatmap data")
+    document_point = next(
+        point
+        for point in heatmap["document_points"]
+        if point["element_id"] == "checkout-button" and point["x"] == 500
+    )
+    assert_true(document_point["absolute_y"] == 900, "Wrong absolute y")
+    assert_true(document_point["normalized_x"] == 0.5, "Wrong document x")
+    assert_true(
+        document_point["normalized_document_y"] == 0.375,
+        "Wrong normalized document y",
+    )
+    assert_true(document_point["element_tag"] == "button", "Missing element tag")
+    legacy_document_point = next(
+        point
+        for point in heatmap["document_points"]
+        if point["session_id"] == "heatmap-invalid"
+    )
+    assert_true(
+        legacy_document_point["normalized_x"] is None
+        and legacy_document_point["normalized_document_y"] is None,
+        "Legacy click without geometry should remain safe and nullable",
+    )
+    print("[OK] Read key receives V2 and scroll-aware V3 heatmap data")
 
     expect_status(
         "GET",
@@ -251,6 +365,13 @@ def main() -> None:
         all(point["page_path"] == "/pricing" for point in pricing_heatmap["points"]),
         "Page filter returned points from another page",
     )
+    assert_true(
+        all(
+            point["page_path"] == "/pricing"
+            for point in pricing_heatmap["document_points"]
+        ),
+        "Page filter returned document points from another page",
+    )
     tablet_heatmap = request_ok(
         "GET",
         "/v1/heatmaps/clicks",
@@ -270,6 +391,13 @@ def main() -> None:
             for point in tablet_heatmap["points"]
         ),
         "Viewport segment filter returned another segment",
+    )
+    assert_true(
+        all(
+            point["viewport_segment"] == "tablet"
+            for point in tablet_heatmap["document_points"]
+        ),
+        "Viewport filter returned another document point segment",
     )
     print("[OK] Master, page_path, and viewport segment filters work")
 
