@@ -91,9 +91,19 @@ def main() -> None:
             viewport_height=720,
         ),
         click_event(
+            "heatmap-mobile",
+            "/pricing",
+            iso_at(base, 5),
+            x=195,
+            y=422,
+            viewport_width=390,
+            viewport_height=844,
+            element_id="mobile-checkout",
+        ),
+        click_event(
             "heatmap-invalid",
             "/invalid",
-            iso_at(base, 5),
+            iso_at(base, 6),
             x=100,
             y=100,
             viewport_width=None,
@@ -103,7 +113,7 @@ def main() -> None:
             "session_id": "heatmap-page-view",
             "event_type": "page_view",
             "page_path": "/pricing",
-            "occurred_at": iso_at(base, 6),
+            "occurred_at": iso_at(base, 7),
         },
     ]
     request_ok(
@@ -118,16 +128,41 @@ def main() -> None:
         "/v1/heatmaps/clicks",
         token=read_key,
     ).json()
-    assert_true(heatmap["total_clicks"] == 5, "Expected five valid heatmap clicks")
     assert_true(
-        heatmap["pages"] == {"/pricing": 3, "/home": 2},
+        heatmap["total_clicks"] == 7,
+        "Expected seven clicks with coordinates",
+    )
+    assert_true(
+        heatmap["pages"] == {"/pricing": 4, "/home": 2, "/invalid": 1},
         f"Unexpected page counts: {heatmap['pages']}",
     )
     assert_true(
         heatmap["element_clicks"]["checkout-button"] == 2,
         "Element click ranking is wrong",
     )
-    assert_true(len(heatmap["points"]) == 5, "Expected five heatmap points")
+    assert_true(len(heatmap["points"]) == 7, "Expected seven heatmap points")
+    assert_true(
+        heatmap["viewport_segments"]
+        == {
+            "mobile": 1,
+            "tablet": 3,
+            "desktop": 2,
+            "unknown": 1,
+        },
+        f"Unexpected viewport segments: {heatmap['viewport_segments']}",
+    )
+    assert_true(
+        bool(heatmap["intensity_zones"]),
+        "Expected intensity zones in the response",
+    )
+    assert_true(
+        max(zone["intensity"] for zone in heatmap["intensity_zones"]) == 1,
+        "Maximum zone intensity must be 1",
+    )
+    assert_true(
+        sum(zone["count"] for zone in heatmap["intensity_zones"]) == 6,
+        "Only clicks with complete viewports should populate intensity zones",
+    )
 
     normalized_point = next(
         point
@@ -136,6 +171,20 @@ def main() -> None:
     )
     assert_true(normalized_point["x_percent"] == 50, "Wrong normalized x")
     assert_true(normalized_point["y_percent"] == 50, "Wrong normalized y")
+    unknown_point = next(
+        point
+        for point in heatmap["points"]
+        if point["session_id"] == "heatmap-invalid"
+    )
+    assert_true(
+        unknown_point["viewport_segment"] == "unknown",
+        "Missing viewport should use the unknown segment",
+    )
+    assert_true(
+        unknown_point["x_percent"] is None
+        and unknown_point["y_percent"] is None,
+        "Missing viewport should not produce normalized coordinates",
+    )
     print("[OK] Read key receives valid click heatmap data")
 
     expect_status(
@@ -185,7 +234,7 @@ def main() -> None:
         token=master_key,
         params={"project_id": project_id},
     ).json()
-    assert_true(master_heatmap["total_clicks"] == 5, "Master project filter failed")
+    assert_true(master_heatmap["total_clicks"] == 7, "Master project filter failed")
 
     pricing_heatmap = request_ok(
         "GET",
@@ -193,16 +242,36 @@ def main() -> None:
         token=read_key,
         params={"page_path": "/pricing"},
     ).json()
-    assert_true(pricing_heatmap["total_clicks"] == 3, "Page filter count is wrong")
+    assert_true(pricing_heatmap["total_clicks"] == 4, "Page filter count is wrong")
     assert_true(
-        pricing_heatmap["pages"] == {"/pricing": 3},
+        pricing_heatmap["pages"] == {"/pricing": 4},
         "Page filter ranking is wrong",
     )
     assert_true(
         all(point["page_path"] == "/pricing" for point in pricing_heatmap["points"]),
         "Page filter returned points from another page",
     )
-    print("[OK] Master and page_path filters work")
+    tablet_heatmap = request_ok(
+        "GET",
+        "/v1/heatmaps/clicks",
+        token=read_key,
+        params={
+            "page_path": "/pricing",
+            "viewport_segment": "tablet",
+        },
+    ).json()
+    assert_true(
+        tablet_heatmap["total_clicks"] == 3,
+        "Viewport segment filter count is wrong",
+    )
+    assert_true(
+        all(
+            point["viewport_segment"] == "tablet"
+            for point in tablet_heatmap["points"]
+        ),
+        "Viewport segment filter returned another segment",
+    )
+    print("[OK] Master, page_path, and viewport segment filters work")
 
 
 if __name__ == "__main__":

@@ -115,6 +115,9 @@ type UXSignalsSummary = {
   low_severity_count: number;
 };
 
+type ViewportSegment = "mobile" | "tablet" | "desktop" | "unknown";
+type HeatmapSegmentFilter = "all" | ViewportSegment;
+
 type ClickHeatmapPoint = {
   event_id: string;
   project_id: string;
@@ -123,11 +126,19 @@ type ClickHeatmapPoint = {
   element_id: string | null;
   x: number;
   y: number;
-  viewport_width: number;
-  viewport_height: number;
-  x_percent: number;
-  y_percent: number;
+  viewport_width: number | null;
+  viewport_height: number | null;
+  viewport_segment: ViewportSegment;
+  x_percent: number | null;
+  y_percent: number | null;
   occurred_at: string;
+};
+
+type ClickHeatmapIntensityZone = {
+  column: number;
+  row: number;
+  count: number;
+  intensity: number;
 };
 
 type ClickHeatmapResponse = {
@@ -135,6 +146,8 @@ type ClickHeatmapResponse = {
   pages: Record<string, number>;
   element_clicks: Record<string, number>;
   points: ClickHeatmapPoint[];
+  viewport_segments: Record<ViewportSegment, number>;
+  intensity_zones: ClickHeatmapIntensityZone[];
 };
 
 type ApiError = {
@@ -181,6 +194,13 @@ const emptyClickHeatmap: ClickHeatmapResponse = {
   pages: {},
   element_clicks: {},
   points: [],
+  viewport_segments: {
+    mobile: 0,
+    tablet: 0,
+    desktop: 0,
+    unknown: 0,
+  },
+  intensity_zones: [],
 };
 
 const defaultFunnelSteps: FunnelStepInput[] = [
@@ -250,6 +270,15 @@ function displayDeadClickElement(signal: DeadClickSignal): string {
 
 function displayElementRanking(value: string): string {
   return value === "coordinate_zone" ? "Coordinate zone" : `#${value}`;
+}
+
+function displayViewportSegment(segment: ViewportSegment): string {
+  return {
+    mobile: "Mobile",
+    tablet: "Tablet",
+    desktop: "Desktop",
+    unknown: "Unknown",
+  }[segment];
 }
 
 function severityClasses(
@@ -430,7 +459,11 @@ export default function Home() {
   const [rageClicks, setRageClicks] = useState<RageClickSignal[]>([]);
   const [deadClicks, setDeadClicks] = useState<DeadClickSignal[]>([]);
   const [clickHeatmap, setClickHeatmap] = useState<ClickHeatmapResponse>(emptyClickHeatmap);
+  const [heatmapView, setHeatmapView] = useState<ClickHeatmapResponse>(emptyClickHeatmap);
   const [heatmapPage, setHeatmapPage] = useState("");
+  const [heatmapSegment, setHeatmapSegment] = useState<HeatmapSegmentFilter>("all");
+  const [isHeatmapLoading, setIsHeatmapLoading] = useState(false);
+  const [heatmapError, setHeatmapError] = useState<ApiError | null>(null);
   const [funnelResult, setFunnelResult] = useState<FunnelAnalyzeResponse | null>(null);
   const [funnelError, setFunnelError] = useState<ApiError | null>(null);
   const [error, setError] = useState<ApiError | null>(null);
@@ -469,16 +502,35 @@ export default function Home() {
     () => sortCounts(clickHeatmap.element_clicks),
     [clickHeatmap.element_clicks],
   );
+  const heatmapSegments = useMemo(
+    () => sortCounts(clickHeatmap.viewport_segments),
+    [clickHeatmap.viewport_segments],
+  );
   const activeHeatmapPage =
     heatmapPage && clickHeatmap.pages[heatmapPage] !== undefined
       ? heatmapPage
       : heatmapPages[0]?.[0] ?? "";
+  const heatmapViewElements = useMemo(
+    () => sortCounts(heatmapView.element_clicks),
+    [heatmapView.element_clicks],
+  );
+  const topHeatmapElement = heatmapViewElements[0];
+  const primaryHeatmapSegment = useMemo(
+    () =>
+      sortCounts(heatmapView.viewport_segments).find(([, count]) => count > 0),
+    [heatmapView.viewport_segments],
+  );
   const heatmapPreviewPoints = useMemo(
     () =>
-      clickHeatmap.points.filter(
-        (point) => (point.page_path || "unknown") === activeHeatmapPage,
+      heatmapView.points.filter(
+        (
+          point,
+        ): point is ClickHeatmapPoint & {
+          x_percent: number;
+          y_percent: number;
+        } => point.x_percent !== null && point.y_percent !== null,
       ),
-    [activeHeatmapPage, clickHeatmap.points],
+    [heatmapView.points],
   );
 
   const eventTypeOptions = useMemo(
@@ -541,7 +593,10 @@ export default function Home() {
       setRageClicks([]);
       setDeadClicks([]);
       setClickHeatmap(emptyClickHeatmap);
+      setHeatmapView(emptyClickHeatmap);
       setHeatmapPage("");
+      setHeatmapSegment("all");
+      setHeatmapError(null);
       setError(null);
       setLastUpdated(null);
       return;
@@ -579,6 +634,7 @@ export default function Home() {
       setRageClicks(nextRageClicks);
       setDeadClicks(nextDeadClicks);
       setClickHeatmap(nextClickHeatmap);
+      setHeatmapView(nextClickHeatmap);
       setLastUpdated(new Date().toLocaleTimeString());
     } catch (nextError) {
       if (nextError && typeof nextError === "object" && "status" in nextError) {
@@ -593,6 +649,70 @@ export default function Home() {
       setIsLoading(false);
     }
   }, []);
+
+  useEffect(() => {
+    let cancelled = false;
+
+    if (!savedToken || !activeHeatmapPage) {
+      return;
+    }
+
+    const loadFilteredHeatmap = async () => {
+      const params = new URLSearchParams({
+        limit: "1000",
+        page_path: activeHeatmapPage,
+      });
+
+      if (heatmapSegment !== "all") {
+        params.set("viewport_segment", heatmapSegment);
+      }
+
+      setIsHeatmapLoading(true);
+      setHeatmapError(null);
+
+      try {
+        const result = await fetchJson<ClickHeatmapResponse>(
+          `/v1/heatmaps/clicks?${params.toString()}`,
+          savedToken,
+        );
+
+        if (!cancelled) {
+          setHeatmapView(result);
+        }
+      } catch (nextError) {
+        if (cancelled) {
+          return;
+        }
+
+        if (nextError && typeof nextError === "object" && "status" in nextError) {
+          setHeatmapError(nextError as ApiError);
+        } else {
+          setHeatmapError({
+            status: 0,
+            message:
+              nextError instanceof Error
+                ? nextError.message
+                : "Unable to load filtered heatmap data.",
+          });
+        }
+      } finally {
+        if (!cancelled) {
+          setIsHeatmapLoading(false);
+        }
+      }
+    };
+
+    void loadFilteredHeatmap();
+
+    return () => {
+      cancelled = true;
+    };
+  }, [
+    activeHeatmapPage,
+    clickHeatmap,
+    heatmapSegment,
+    savedToken,
+  ]);
 
   const refreshDashboard = useCallback(
     async (token = savedToken) => {
@@ -689,7 +809,10 @@ export default function Home() {
     setRageClicks([]);
     setDeadClicks([]);
     setClickHeatmap(emptyClickHeatmap);
+    setHeatmapView(emptyClickHeatmap);
     setHeatmapPage("");
+    setHeatmapSegment("all");
+    setHeatmapError(null);
     setFunnelResult(null);
     setFunnelError(null);
     setError(null);
@@ -1303,65 +1426,115 @@ export default function Home() {
         </section>
 
         <section className="space-y-4">
-          <div className="flex flex-col gap-3 sm:flex-row sm:items-end sm:justify-between">
+          <div className="flex flex-col gap-3 xl:flex-row xl:items-end xl:justify-between">
             <div>
-              <h2 className="text-lg font-semibold text-slate-950">Click Heatmap V1</h2>
+              <h2 className="text-lg font-semibold text-slate-950">Click Heatmap V2</h2>
               <p className="mt-1 text-sm text-slate-500">
-                Normalized click positions from captured browser viewports
+                Page-level click density with viewport segmentation
               </p>
             </div>
 
-            <label className="w-full sm:w-72">
-              <span className="mb-1.5 block text-xs font-semibold uppercase tracking-wide text-slate-500">
-                Preview page
-              </span>
-              <select
-                value={activeHeatmapPage}
-                onChange={(event) => setHeatmapPage(event.target.value)}
-                disabled={!heatmapPages.length}
-                className="h-10 w-full rounded-lg border border-slate-300 bg-white px-3 text-sm text-slate-700 outline-none transition focus:border-sky-500 focus:ring-2 focus:ring-sky-100 disabled:cursor-not-allowed disabled:bg-slate-100"
-              >
-                {heatmapPages.length ? (
-                  heatmapPages.map(([page, count]) => (
-                    <option key={page} value={page}>
-                      {displayPage(page)} ({count})
-                    </option>
-                  ))
-                ) : (
-                  <option value="">No click pages</option>
-                )}
-              </select>
-            </label>
+            <div className="grid w-full gap-3 sm:grid-cols-2 xl:w-auto">
+              <label className="w-full xl:w-72">
+                <span className="mb-1.5 block text-xs font-semibold uppercase tracking-wide text-slate-500">
+                  Page
+                </span>
+                <select
+                  value={activeHeatmapPage}
+                  onChange={(event) => setHeatmapPage(event.target.value)}
+                  disabled={!heatmapPages.length}
+                  className="h-10 w-full rounded-lg border border-slate-300 bg-white px-3 text-sm text-slate-700 outline-none transition focus:border-sky-500 focus:ring-2 focus:ring-sky-100 disabled:cursor-not-allowed disabled:bg-slate-100"
+                >
+                  {heatmapPages.length ? (
+                    heatmapPages.map(([page, count]) => (
+                      <option key={page} value={page}>
+                        {displayPage(page)} ({count})
+                      </option>
+                    ))
+                  ) : (
+                    <option value="">No click pages</option>
+                  )}
+                </select>
+              </label>
+
+              <label className="w-full xl:w-52">
+                <span className="mb-1.5 block text-xs font-semibold uppercase tracking-wide text-slate-500">
+                  Viewport segment
+                </span>
+                <select
+                  value={heatmapSegment}
+                  onChange={(event) =>
+                    setHeatmapSegment(event.target.value as HeatmapSegmentFilter)
+                  }
+                  className="h-10 w-full rounded-lg border border-slate-300 bg-white px-3 text-sm text-slate-700 outline-none transition focus:border-sky-500 focus:ring-2 focus:ring-sky-100"
+                >
+                  <option value="all">All</option>
+                  <option value="desktop">Desktop</option>
+                  <option value="tablet">Tablet</option>
+                  <option value="mobile">Mobile</option>
+                </select>
+              </label>
+            </div>
           </div>
 
           <div className="grid gap-4 sm:grid-cols-2 xl:grid-cols-4">
             <MetricCard
-              label="Heatmap Clicks"
-              value={clickHeatmap.total_clicks.toLocaleString()}
-              detail="Clicks with valid coordinates"
+              label="Filtered Clicks"
+              value={heatmapView.total_clicks.toLocaleString()}
+              detail={`${displayPage(activeHeatmapPage)} / ${heatmapSegment === "all" ? "All viewports" : displayViewportSegment(heatmapSegment)}`}
               accent="sky"
             />
             <MetricCard
-              label="Pages"
+              label="Click Pages"
               value={heatmapPages.length.toLocaleString()}
-              detail="Pages with heatmap data"
+              detail={`${clickHeatmap.total_clicks.toLocaleString()} clicks across all pages`}
               accent="emerald"
             />
             <MetricCard
-              label="Elements"
-              value={heatmapElements.length.toLocaleString()}
-              detail="Elements or coordinate zones"
+              label="Top Element"
+              value={
+                topHeatmapElement
+                  ? displayElementRanking(topHeatmapElement[0])
+                  : "No element"
+              }
+              detail={
+                topHeatmapElement
+                  ? `${topHeatmapElement[1].toLocaleString()} filtered clicks`
+                  : "No element data"
+              }
               accent="amber"
             />
             <MetricCard
-              label="Loaded Points"
-              value={clickHeatmap.points.length.toLocaleString()}
-              detail="Up to 1,000 recent points"
+              label="Primary Segment"
+              value={
+                primaryHeatmapSegment
+                  ? displayViewportSegment(
+                      primaryHeatmapSegment[0] as ViewportSegment,
+                    )
+                  : "No segment"
+              }
+              detail={
+                primaryHeatmapSegment
+                  ? `${primaryHeatmapSegment[1].toLocaleString()} filtered clicks`
+                  : "No viewport data"
+              }
               accent="violet"
             />
           </div>
 
-          <div className="grid gap-4 xl:grid-cols-2">
+          {heatmapError ? (
+            <div
+              className="rounded-lg border border-rose-200 bg-rose-50 px-4 py-3 text-sm text-rose-800"
+              role="alert"
+            >
+              <span className="font-semibold">
+                {heatmapError.status ? `HTTP ${heatmapError.status}: ` : ""}
+              </span>
+              {heatmapError.message}
+            </div>
+          ) : null}
+
+          <div className="grid gap-4 xl:grid-cols-3">
             <article className="rounded-lg border border-slate-200 bg-white p-5 shadow-sm">
               <h3 className="text-base font-semibold">Clicks by Page</h3>
               <p className="mt-1 text-sm text-slate-500">Pages ranked by valid click coordinates</p>
@@ -1417,6 +1590,32 @@ export default function Home() {
                 )}
               </div>
             </article>
+
+            <article className="rounded-lg border border-slate-200 bg-white p-5 shadow-sm">
+              <h3 className="text-base font-semibold">Clicks by Viewport</h3>
+              <p className="mt-1 text-sm text-slate-500">
+                Device-width segments across all click pages
+              </p>
+
+              <div className="mt-5 divide-y divide-slate-100">
+                {heatmapSegments.map(([segment, count], index) => (
+                  <div
+                    key={segment}
+                    className="flex items-center gap-3 py-3 first:pt-0 last:pb-0"
+                  >
+                    <span className="flex h-7 w-7 shrink-0 items-center justify-center rounded-full bg-slate-100 text-xs font-semibold text-slate-500">
+                      {index + 1}
+                    </span>
+                    <span className="min-w-0 flex-1 truncate text-sm font-medium text-slate-700">
+                      {displayViewportSegment(segment as ViewportSegment)}
+                    </span>
+                    <span className="shrink-0 text-sm font-semibold tabular-nums text-slate-600">
+                      {count.toLocaleString()}
+                    </span>
+                  </div>
+                ))}
+              </div>
+            </article>
           </div>
 
           <article className="rounded-lg border border-slate-200 bg-white shadow-sm">
@@ -1428,12 +1627,14 @@ export default function Home() {
                 </p>
               </div>
               <p className="text-sm font-semibold tabular-nums text-slate-600">
-                {heatmapPreviewPoints.length.toLocaleString()} points
+                {isHeatmapLoading
+                  ? "Updating..."
+                  : `${heatmapView.total_clicks.toLocaleString()} clicks`}
               </p>
             </div>
 
             <div className="p-4 sm:p-5">
-              {heatmapPreviewPoints.length ? (
+              {heatmapView.total_clicks ? (
                 <div className="relative aspect-video w-full overflow-hidden rounded-lg border border-slate-300 bg-slate-50">
                   {[25, 50, 75].map((position) => (
                     <div
@@ -1449,6 +1650,20 @@ export default function Home() {
                       style={{ top: `${position}%` }}
                     />
                   ))}
+                  {heatmapView.intensity_zones.map((zone) => (
+                    <span
+                      key={`zone-${zone.column}-${zone.row}`}
+                      className="absolute bg-rose-500"
+                      style={{
+                        left: `${(zone.column / 12) * 100}%`,
+                        top: `${(zone.row / 8) * 100}%`,
+                        width: `${100 / 12}%`,
+                        height: `${100 / 8}%`,
+                        opacity: 0.08 + zone.intensity * 0.42,
+                      }}
+                      title={`Zone ${zone.column + 1}, ${zone.row + 1}: ${zone.count} clicks`}
+                    />
+                  ))}
                   {heatmapPreviewPoints.map((point) => (
                     <span
                       key={point.event_id}
@@ -1460,6 +1675,11 @@ export default function Home() {
                       title={`${displayElementRanking(point.element_id || "coordinate_zone")} at ${point.x_percent}%, ${point.y_percent}%`}
                     />
                   ))}
+                  {!heatmapPreviewPoints.length ? (
+                    <div className="absolute inset-0 flex items-center justify-center px-4 text-center text-sm font-medium text-slate-500">
+                      Clicks in this segment do not have a complete viewport.
+                    </div>
+                  ) : null}
                 </div>
               ) : (
                 <EmptyState>No click points available for this page.</EmptyState>
@@ -1471,12 +1691,12 @@ export default function Home() {
             <div className="border-b border-slate-200 p-4 sm:p-5">
               <h3 className="text-base font-semibold">Recent Heatmap Points</h3>
               <p className="mt-1 text-sm text-slate-500">
-                Latest {clickHeatmap.points.length} points visible to the current token
+                Latest {heatmapView.points.length} points matching the page and viewport filters
               </p>
             </div>
 
             <div className="overflow-x-auto">
-              {clickHeatmap.points.length ? (
+              {heatmapView.points.length ? (
                 <table className="min-w-[980px] w-full divide-y divide-slate-200 text-left text-sm">
                   <thead className="bg-slate-50 text-xs uppercase tracking-wide text-slate-500">
                     <tr>
@@ -1484,12 +1704,13 @@ export default function Home() {
                       <th scope="col" className="px-4 py-3 font-semibold">Element</th>
                       <th scope="col" className="px-4 py-3 text-right font-semibold">Coordinates</th>
                       <th scope="col" className="px-4 py-3 text-right font-semibold">Viewport</th>
+                      <th scope="col" className="px-4 py-3 font-semibold">Segment</th>
                       <th scope="col" className="px-4 py-3 font-semibold">Session ID</th>
                       <th scope="col" className="px-4 py-3 font-semibold">Occurred At</th>
                     </tr>
                   </thead>
                   <tbody className="divide-y divide-slate-100">
-                    {clickHeatmap.points.map((point) => (
+                    {heatmapView.points.map((point) => (
                       <tr key={point.event_id} className="transition hover:bg-slate-50">
                         <td className="max-w-56 px-4 py-3">
                           <p
@@ -1511,7 +1732,12 @@ export default function Home() {
                           {Math.round(point.x)}, {Math.round(point.y)}
                         </td>
                         <td className="whitespace-nowrap px-4 py-3 text-right font-mono text-xs text-slate-500">
-                          {point.viewport_width} x {point.viewport_height}
+                          {point.viewport_width && point.viewport_height
+                            ? `${point.viewport_width} x ${point.viewport_height}`
+                            : "Unknown"}
+                        </td>
+                        <td className="px-4 py-3 text-slate-600">
+                          {displayViewportSegment(point.viewport_segment)}
                         </td>
                         <td className="max-w-52 px-4 py-3">
                           <p

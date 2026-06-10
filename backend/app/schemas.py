@@ -191,11 +191,19 @@ class ClickHeatmapPointResponse(BaseModel):
     element_id: str | None
     x: float
     y: float
-    viewport_width: int
-    viewport_height: int
-    x_percent: float
-    y_percent: float
+    viewport_width: int | None
+    viewport_height: int | None
+    viewport_segment: Literal["mobile", "tablet", "desktop", "unknown"]
+    x_percent: float | None
+    y_percent: float | None
     occurred_at: datetime
+
+
+class ClickHeatmapIntensityZoneResponse(BaseModel):
+    column: int
+    row: int
+    count: int
+    intensity: float = Field(ge=0, le=1)
 
 
 class ClickHeatmapResponse(BaseModel):
@@ -203,3 +211,5 @@ class ClickHeatmapResponse(BaseModel):
     pages: dict[str, int]
     element_clicks: dict[str, int]
     points: list[ClickHeatmapPointResponse]
+    viewport_segments: dict[str, int]
+    intensity_zones: list[ClickHeatmapIntensityZoneResponse]

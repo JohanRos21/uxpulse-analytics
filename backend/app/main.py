@@ -1,6 +1,7 @@
 import hmac
 import os
 from pathlib import Path
+from typing import Literal
 
 from dotenv import load_dotenv
 from fastapi import Depends, FastAPI, HTTPException, Query
@@ -490,6 +491,7 @@ def get_ux_signals_summary_endpoint(
 def get_click_heatmap_endpoint(
     project_id: str | None = None,
     page_path: str | None = Query(default=None, max_length=500),
+    viewport_segment: Literal["mobile", "tablet", "desktop", "unknown"] | None = None,
     limit: int = Query(default=1000, ge=1, le=5000),
     auth=Depends(require_read_permission),
     db: Session = Depends(get_db),
@@ -499,6 +501,7 @@ def get_click_heatmap_endpoint(
         db,
         project_id=effective_project_id,
         page_path=page_path,
+        viewport_segment=viewport_segment,
         limit=limit,
     )
     return ClickHeatmapResponse(**heatmap)
