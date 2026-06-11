@@ -231,6 +231,35 @@ type FormFieldAnalytics = {
   average_time_on_field_ms: number;
 };
 
+type IntelligenceSeverity = "low" | "medium" | "high";
+
+type UXIntelligenceInsight = {
+  id: string;
+  type: string;
+  severity: IntelligenceSeverity;
+  title: string;
+  description: string;
+  recommendation: string;
+  page_path: string | null;
+  element: string | null;
+  metric: string;
+  value: number;
+  evidence: string[];
+  confidence: number;
+};
+
+type UXIntelligenceSummary = {
+  total_issues: number;
+  high_severity_count: number;
+  medium_severity_count: number;
+  low_severity_count: number;
+  top_issue_type: string | null;
+  top_problem_page: string | null;
+  overall_health_score: number;
+  generated_at: string;
+  short_summary: string;
+};
+
 type ApiError = {
   status: number;
   message: string;
@@ -287,6 +316,18 @@ const emptyFormAnalyticsSummary: FormAnalyticsSummary = {
   top_forms_by_starts: [],
   top_forms_by_abandonment: [],
   top_forms_by_submit_rate: [],
+};
+
+const emptyIntelligenceSummary: UXIntelligenceSummary = {
+  total_issues: 0,
+  high_severity_count: 0,
+  medium_severity_count: 0,
+  low_severity_count: 0,
+  top_issue_type: null,
+  top_problem_page: null,
+  overall_health_score: 100,
+  generated_at: "",
+  short_summary: "Aún no hay datos de inteligencia para mostrar.",
 };
 
 const emptyClickHeatmap: ClickHeatmapResponse = {
@@ -438,7 +479,10 @@ function displayViewportSegment(segment: ViewportSegment): string {
 }
 
 function displaySeverity(
-  severity: RageClickSignal["severity"] | DeadClickSignal["severity"],
+  severity:
+    | RageClickSignal["severity"]
+    | DeadClickSignal["severity"]
+    | IntelligenceSeverity,
 ): string {
   return {
     low: "Baja",
@@ -448,13 +492,35 @@ function displaySeverity(
 }
 
 function severityClasses(
-  severity: RageClickSignal["severity"] | DeadClickSignal["severity"],
+  severity:
+    | RageClickSignal["severity"]
+    | DeadClickSignal["severity"]
+    | IntelligenceSeverity,
 ): string {
   return {
     low: "bg-amber-50 text-amber-700",
     medium: "bg-orange-50 text-orange-700",
     high: "bg-rose-50 text-rose-700",
   }[severity];
+}
+
+function displayIssueType(value: string | null): string {
+  if (!value) {
+    return "Sin problemas";
+  }
+
+  const labels: Record<string, string> = {
+    dead_click_issue: "Dead Click",
+    rage_click_issue: "Rage Click",
+    funnel_dropoff_issue: "Abandono de funnel",
+    form_abandonment_issue: "Abandono de formulario",
+    field_friction_issue: "Fricción de campo",
+    scroll_depth_issue: "Profundidad de scroll",
+    device_segment_issue: "Segmento de dispositivo",
+    low_data_notice: "Datos insuficientes",
+  };
+
+  return labels[value] ?? value.replace(/_/g, " ");
 }
 
 function describeFunnelStep(
@@ -629,6 +695,10 @@ export default function Home() {
   const [formAnalyticsSummary, setFormAnalyticsSummary] = useState<FormAnalyticsSummary>(emptyFormAnalyticsSummary);
   const [formAbandonment, setFormAbandonment] = useState<FormAnalyticsItem[]>([]);
   const [formFields, setFormFields] = useState<FormFieldAnalytics[]>([]);
+  const [intelligenceSummary, setIntelligenceSummary] = useState<UXIntelligenceSummary>(emptyIntelligenceSummary);
+  const [intelligenceRecommendations, setIntelligenceRecommendations] = useState<UXIntelligenceInsight[]>([]);
+  const [intelligenceSeverityFilter, setIntelligenceSeverityFilter] = useState("");
+  const [intelligencePageFilter, setIntelligencePageFilter] = useState("");
   const [events, setEvents] = useState<AnalyticsEvent[]>([]);
   const [sessions, setSessions] = useState<AnalyticsSession[]>([]);
   const [rageClicks, setRageClicks] = useState<RageClickSignal[]>([]);
@@ -671,6 +741,35 @@ export default function Home() {
   );
   const topDeadPage = deadClicksByPage[0];
   const mostProblematicField = formFields[0];
+  const intelligencePages = useMemo(
+    () =>
+      Array.from(
+        new Set(
+          intelligenceRecommendations
+            .map((recommendation) => recommendation.page_path)
+            .filter((page): page is string => Boolean(page)),
+        ),
+      ).sort(),
+    [intelligenceRecommendations],
+  );
+  const filteredIntelligenceRecommendations = useMemo(
+    () =>
+      intelligenceRecommendations.filter(
+        (recommendation) =>
+          (!intelligenceSeverityFilter
+            || recommendation.severity === intelligenceSeverityFilter)
+          && (!intelligencePageFilter
+            || recommendation.page_path === intelligencePageFilter),
+      ),
+    [
+      intelligencePageFilter,
+      intelligenceRecommendations,
+      intelligenceSeverityFilter,
+    ],
+  );
+  const lowDataNotice = intelligenceRecommendations.find(
+    (recommendation) => recommendation.type === "low_data_notice",
+  );
   const heatmapPages = useMemo(
     () => sortCounts(clickHeatmap.pages),
     [clickHeatmap.pages],
@@ -831,6 +930,10 @@ export default function Home() {
       setFormAnalyticsSummary(emptyFormAnalyticsSummary);
       setFormAbandonment([]);
       setFormFields([]);
+      setIntelligenceSummary(emptyIntelligenceSummary);
+      setIntelligenceRecommendations([]);
+      setIntelligenceSeverityFilter("");
+      setIntelligencePageFilter("");
       setEvents([]);
       setSessions([]);
       setRageClicks([]);
@@ -864,6 +967,8 @@ export default function Home() {
         nextFormAnalyticsSummary,
         nextFormAbandonment,
         nextFormFields,
+        nextIntelligenceSummary,
+        nextIntelligenceRecommendations,
       ] = await Promise.all([
         fetchJson<EventsSummary>("/v1/events/summary", trimmedToken),
         fetchJson<AnalyticsEvent[]>("/v1/events?limit=25", trimmedToken),
@@ -876,6 +981,11 @@ export default function Home() {
         fetchJson<FormAnalyticsSummary>("/v1/forms/summary", trimmedToken),
         fetchJson<FormAnalyticsItem[]>("/v1/forms/abandonment?limit=25", trimmedToken),
         fetchJson<FormFieldAnalytics[]>("/v1/forms/fields?limit=25", trimmedToken),
+        fetchJson<UXIntelligenceSummary>("/v1/intelligence/summary", trimmedToken),
+        fetchJson<UXIntelligenceInsight[]>(
+          "/v1/intelligence/recommendations?limit=100",
+          trimmedToken,
+        ),
       ]);
 
       setSummary(nextSummary);
@@ -890,6 +1000,8 @@ export default function Home() {
       setFormAnalyticsSummary(nextFormAnalyticsSummary);
       setFormAbandonment(nextFormAbandonment);
       setFormFields(nextFormFields);
+      setIntelligenceSummary(nextIntelligenceSummary);
+      setIntelligenceRecommendations(nextIntelligenceRecommendations);
       setLastUpdated(new Date().toLocaleTimeString());
       return true;
     } catch (nextError) {
@@ -1309,6 +1421,184 @@ export default function Home() {
                 ))
               ) : (
                 <EmptyState>Aún no hay páginas para mostrar.</EmptyState>
+              )}
+            </div>
+          </article>
+        </section>
+
+        <section className="space-y-4">
+          <div>
+            <h2 className="text-lg font-semibold text-slate-950">UX Intelligence</h2>
+            <p className="mt-1 text-sm text-slate-500">
+              Recomendaciones automáticas basadas en reglas y evidencia observada
+            </p>
+          </div>
+
+          <div className="grid gap-4 sm:grid-cols-2 xl:grid-cols-4">
+            <MetricCard
+              label="Health score"
+              value={`${intelligenceSummary.overall_health_score}/100`}
+              detail={intelligenceSummary.short_summary}
+              accent="emerald"
+            />
+            <MetricCard
+              label="Problemas detectados"
+              value={intelligenceSummary.total_issues.toLocaleString()}
+              detail={`Principal: ${displayIssueType(intelligenceSummary.top_issue_type)}`}
+              accent="sky"
+            />
+            <MetricCard
+              label="Severidad alta"
+              value={intelligenceSummary.high_severity_count.toLocaleString()}
+              detail={`${intelligenceSummary.medium_severity_count.toLocaleString()} de severidad media`}
+              accent="amber"
+            />
+            <MetricCard
+              label="Página más problemática"
+              value={displayPage(intelligenceSummary.top_problem_page)}
+              detail={
+                intelligenceSummary.generated_at
+                  ? `Generado: ${formatDate(intelligenceSummary.generated_at)}`
+                  : "Aún no se ha generado el análisis"
+              }
+              accent="violet"
+            />
+          </div>
+
+          {lowDataNotice ? (
+            <div className="rounded-lg border border-amber-200 bg-amber-50 px-4 py-3 text-sm text-amber-900">
+              <p className="font-semibold">{lowDataNotice.title}</p>
+              <p className="mt-1 text-amber-800">{lowDataNotice.recommendation}</p>
+            </div>
+          ) : null}
+
+          <article className="rounded-lg border border-slate-200 bg-white shadow-sm">
+            <div className="flex flex-col gap-4 border-b border-slate-200 p-4 sm:p-5 lg:flex-row lg:items-end lg:justify-between">
+              <div>
+                <h3 className="text-base font-semibold">Recomendaciones priorizadas</h3>
+                <p className="mt-1 text-sm text-slate-500">
+                  Ordenadas por severidad, confianza y fuerza de la métrica
+                </p>
+              </div>
+
+              <div className="grid gap-3 sm:grid-cols-[160px_minmax(220px,1fr)_auto]">
+                <label className="text-xs font-semibold text-slate-600">
+                  Severidad
+                  <select
+                    value={intelligenceSeverityFilter}
+                    onChange={(event) => setIntelligenceSeverityFilter(event.target.value)}
+                    className="mt-1 h-10 w-full rounded-lg border border-slate-300 bg-white px-3 text-sm font-normal text-slate-800 outline-none focus:border-sky-500 focus:ring-2 focus:ring-sky-100"
+                  >
+                    <option value="">Todas</option>
+                    <option value="high">Alta</option>
+                    <option value="medium">Media</option>
+                    <option value="low">Baja</option>
+                  </select>
+                </label>
+
+                <label className="text-xs font-semibold text-slate-600">
+                  Página
+                  <select
+                    value={intelligencePageFilter}
+                    onChange={(event) => setIntelligencePageFilter(event.target.value)}
+                    className="mt-1 h-10 w-full min-w-0 rounded-lg border border-slate-300 bg-white px-3 text-sm font-normal text-slate-800 outline-none focus:border-sky-500 focus:ring-2 focus:ring-sky-100"
+                  >
+                    <option value="">Todas las páginas</option>
+                    {intelligencePages.map((page) => (
+                      <option key={page} value={page}>
+                        {displayPage(page)}
+                      </option>
+                    ))}
+                  </select>
+                </label>
+
+                <button
+                  type="button"
+                  onClick={() => {
+                    setIntelligenceSeverityFilter("");
+                    setIntelligencePageFilter("");
+                  }}
+                  disabled={!intelligenceSeverityFilter && !intelligencePageFilter}
+                  className="h-10 self-end rounded-lg border border-slate-300 bg-white px-4 text-sm font-semibold text-slate-700 transition hover:bg-slate-50 disabled:cursor-not-allowed disabled:opacity-50"
+                >
+                  Limpiar filtros
+                </button>
+              </div>
+            </div>
+
+            <div className="divide-y divide-slate-100">
+              {filteredIntelligenceRecommendations.length ? (
+                filteredIntelligenceRecommendations.map((insight) => (
+                  <div key={insight.id} className="p-4 sm:p-5">
+                    <div className="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
+                      <div className="min-w-0">
+                        <div className="flex flex-wrap items-center gap-2">
+                          <span
+                            className={`rounded-full px-2.5 py-1 text-xs font-semibold ${severityClasses(insight.severity)}`}
+                          >
+                            {displaySeverity(insight.severity)}
+                          </span>
+                          <span className="text-xs font-medium text-slate-500">
+                            {displayIssueType(insight.type)}
+                          </span>
+                        </div>
+                        <h4 className="mt-3 text-base font-semibold text-slate-950">
+                          {insight.title}
+                        </h4>
+                        <p className="mt-1 text-sm leading-6 text-slate-600">
+                          {insight.description}
+                        </p>
+                      </div>
+
+                      <div className="shrink-0 text-left sm:text-right">
+                        <p className="text-xs font-medium uppercase tracking-wide text-slate-500">
+                          Confianza
+                        </p>
+                        <p className="mt-1 text-lg font-semibold tabular-nums text-slate-900">
+                          {Math.round(insight.confidence * 100)}%
+                        </p>
+                      </div>
+                    </div>
+
+                    <div className="mt-4 grid gap-4 lg:grid-cols-2">
+                      <div className="rounded-lg bg-sky-50 p-3">
+                        <p className="text-xs font-semibold uppercase tracking-wide text-sky-700">
+                          Recomendación
+                        </p>
+                        <p className="mt-1 text-sm leading-6 text-sky-950">
+                          {insight.recommendation}
+                        </p>
+                      </div>
+
+                      <div className="rounded-lg bg-slate-50 p-3">
+                        <p className="text-xs font-semibold uppercase tracking-wide text-slate-600">
+                          Evidencia
+                        </p>
+                        <div className="mt-2 space-y-1 text-sm text-slate-700">
+                          {insight.evidence.map((evidence) => (
+                            <p key={evidence}>• {evidence}</p>
+                          ))}
+                        </div>
+                      </div>
+                    </div>
+
+                    <div className="mt-3 flex flex-wrap gap-x-5 gap-y-1 text-xs text-slate-500">
+                      <span>Página: {displayPage(insight.page_path)}</span>
+                      <span>Elemento: {insight.element || "No aplica"}</span>
+                      <span>
+                        Métrica: {insight.metric} = {insight.value.toLocaleString()}
+                      </span>
+                    </div>
+                  </div>
+                ))
+              ) : (
+                <div className="p-5">
+                  <EmptyState>
+                    {intelligenceRecommendations.length
+                      ? "No hay recomendaciones que coincidan con los filtros."
+                      : "No se detectaron problemas con los datos y reglas actuales."}
+                  </EmptyState>
+                </div>
               )}
             </div>
           </article>

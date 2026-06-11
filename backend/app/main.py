@@ -31,6 +31,8 @@ from app.schemas import (
     SessionResponse,
     SessionSummaryResponse,
     UXSignalsSummaryResponse,
+    UXIntelligenceInsightResponse,
+    UXIntelligenceSummaryResponse,
     WhoAmIResponse,
 )
 from app.services.event_service import (
@@ -63,6 +65,11 @@ from app.services.ux_signal_service import (
     detect_dead_clicks,
     detect_rage_clicks,
     get_ux_signals_summary,
+)
+from app.services.ux_intelligence_service import (
+    get_intelligence_issues,
+    get_intelligence_recommendations,
+    get_intelligence_summary,
 )
 
 ROOT_DIR = Path(__file__).resolve().parents[2]
@@ -567,3 +574,69 @@ def get_click_heatmap_endpoint(
         limit=limit,
     )
     return ClickHeatmapResponse(**heatmap)
+
+
+@app.get(
+    "/v1/intelligence/summary",
+    response_model=UXIntelligenceSummaryResponse,
+)
+def get_intelligence_summary_endpoint(
+    project_id: str | None = None,
+    auth=Depends(require_read_permission),
+    db: Session = Depends(get_db),
+):
+    effective_project_id = resolve_analytics_project_id(auth, project_id)
+    summary = get_intelligence_summary(
+        db,
+        project_id=effective_project_id,
+    )
+    return UXIntelligenceSummaryResponse(**summary)
+
+
+@app.get(
+    "/v1/intelligence/recommendations",
+    response_model=list[UXIntelligenceInsightResponse],
+)
+def get_intelligence_recommendations_endpoint(
+    project_id: str | None = None,
+    page_path: str | None = Query(default=None, max_length=500),
+    severity: Literal["low", "medium", "high"] | None = None,
+    limit: int = Query(default=100, ge=1, le=1000),
+    auth=Depends(require_read_permission),
+    db: Session = Depends(get_db),
+):
+    effective_project_id = resolve_analytics_project_id(auth, project_id)
+    recommendations = get_intelligence_recommendations(
+        db,
+        project_id=effective_project_id,
+        page_path=page_path,
+        severity=severity,
+        limit=limit,
+    )
+    return [
+        UXIntelligenceInsightResponse(**recommendation)
+        for recommendation in recommendations
+    ]
+
+
+@app.get(
+    "/v1/intelligence/issues",
+    response_model=list[UXIntelligenceInsightResponse],
+)
+def get_intelligence_issues_endpoint(
+    project_id: str | None = None,
+    page_path: str | None = Query(default=None, max_length=500),
+    severity: Literal["low", "medium", "high"] | None = None,
+    limit: int = Query(default=100, ge=1, le=1000),
+    auth=Depends(require_read_permission),
+    db: Session = Depends(get_db),
+):
+    effective_project_id = resolve_analytics_project_id(auth, project_id)
+    issues = get_intelligence_issues(
+        db,
+        project_id=effective_project_id,
+        page_path=page_path,
+        severity=severity,
+        limit=limit,
+    )
+    return [UXIntelligenceInsightResponse(**issue) for issue in issues]

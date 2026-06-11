@@ -303,3 +303,30 @@ class FormFieldAnalyticsResponse(BaseModel):
     blur_count: int
     abandon_count_as_last_field: int
     average_time_on_field_ms: float = Field(ge=0)
+
+
+class UXIntelligenceInsightResponse(BaseModel):
+    id: str
+    type: str
+    severity: Literal["low", "medium", "high"]
+    title: str
+    description: str
+    recommendation: str
+    page_path: str | None
+    element: str | None
+    metric: str
+    value: float
+    evidence: list[str]
+    confidence: float = Field(ge=0, le=1)
+
+
+class UXIntelligenceSummaryResponse(BaseModel):
+    total_issues: int
+    high_severity_count: int
+    medium_severity_count: int
+    low_severity_count: int
+    top_issue_type: str | None
+    top_problem_page: str | None
+    overall_health_score: int = Field(ge=0, le=100)
+    generated_at: datetime
+    short_summary: str
