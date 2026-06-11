@@ -1,80 +1,132 @@
 # UXPulse Analytics
 
-Self-hosted UX behavior analytics built with FastAPI, PostgreSQL, Next.js, and
-a browser TypeScript SDK.
+Plataforma autohospedada de analítica del comportamiento UX, construida con
+FastAPI, PostgreSQL, Next.js y un SDK TypeScript para navegador.
 
-## Architecture
+## Características
 
-- `backend/`: FastAPI API, SQLAlchemy models, analytics services, and Alembic
-  migrations.
-- `frontend/`: Next.js dashboard for events, sessions, funnels, and UX signals.
-- `sdk/`: browser SDK that captures page views, clicks, scroll depth, and
-  custom events.
-- `scripts/`: database and end-to-end smoke-test utilities.
+- Event Tracking API con ingesta individual y por lotes.
+- SDK TypeScript para navegador que captura vistas de página, clics,
+  profundidad de desplazamiento y eventos personalizados.
+- Dashboard en Next.js con eventos, sesiones, embudos y señales UX.
+- Analítica de sesiones y análisis ordenado de embudos.
+- Detección de Rage Clicks y Dead Clicks.
+- Mapas de clics por viewport y mapas de página completa sensibles al
+  desplazamiento.
+- Segmentación por desktop, tablet, mobile y unknown.
+- Zonas de intensidad y distribución de clics por profundidad de
+  desplazamiento.
+- Permisos separados para API keys de tipo `ingest` y `read`.
+- Aislamiento de datos por proyecto.
+- Persistencia en PostgreSQL con migraciones Alembic.
+- Smoke tests de extremo a extremo para los principales flujos de analítica.
+
+## Arquitectura
+
+- `backend/`: API FastAPI, modelos SQLAlchemy, servicios de analítica y
+  migraciones Alembic.
+- `frontend/`: dashboard en Next.js para eventos, sesiones, embudos, señales
+  UX y mapas de clics.
+- `sdk/`: SDK para navegador que captura vistas de página, clics, profundidad
+  de desplazamiento y eventos personalizados.
+- `scripts/`: utilidades de base de datos y smoke tests de extremo a extremo.
+
+## Capturas
+
+### Vista general del dashboard
+
+![Vista general del dashboard de UXPulse Analytics](docs/screenshots/dashboard-overview.png)
+
+### Analítica de sesiones
+
+![Analítica de sesiones de UXPulse](docs/screenshots/sessions.png)
+
+### Análisis de embudos
+
+![Análisis de embudos de UXPulse](docs/screenshots/funnels.png)
+
+### Señales UX
+
+![Señales UX de UXPulse](docs/screenshots/ux-signals.png)
+
+### Mapa de clics por viewport
+
+![Mapa de clics por viewport de UXPulse](docs/screenshots/click-heatmap-viewport.png)
+
+### Mapa de clics de página completa
+
+![Mapa de clics de página completa de UXPulse](docs/screenshots/click-heatmap-full-page.png)
+
+### Documentación de la API
+
+![Documentación FastAPI de UXPulse](docs/screenshots/swagger.png)
 
 ## API keys
 
-Project keys have separate capabilities:
+Las claves de proyecto tienen permisos separados:
 
-- `ingest`: intended for the browser SDK. It can only send events.
-- `read`: intended for the dashboard or trusted server-side analytics clients.
-  It can only read analytics.
-- The master key can administer projects and read analytics across projects.
+- `ingest`: destinada al SDK del navegador. Solo puede enviar eventos.
+- `read`: destinada al dashboard o a clientes de analítica confiables del lado
+  del servidor. Solo puede consultar la analítica.
+- La master key puede administrar proyectos y consultar la analítica de todos
+  los proyectos.
 
-Never embed a read key or the master key in a public browser application.
+Nunca incluyas una clave `read` ni la master key en una aplicación pública del
+navegador.
 
-Create a scoped project key with:
+Crea una clave de proyecto con permisos definidos:
 
 ```json
 {
-  "name": "Production browser SDK",
+  "name": "SDK de navegador en producción",
   "key_type": "ingest"
 }
 ```
 
-Use `"key_type": "read"` for a dashboard key.
+Usa `"key_type": "read"` para una clave destinada al dashboard.
 
-## Event time
+## Tiempo de los eventos
 
-Events store both:
+Los eventos almacenan dos marcas de tiempo:
 
-- `occurred_at`: when the event happened in the browser.
-- `created_at`: when the backend persisted the event.
+- `occurred_at`: cuándo ocurrió el evento en el navegador.
+- `created_at`: cuándo el backend guardó el evento.
 
-Sessions, funnels, recent-event ordering, and rage-click detection use
-`occurred_at`. Older rows receive their existing `created_at` value during the
-migration.
+Las sesiones, los embudos, el orden de eventos recientes y la detección de Rage
+Clicks usan `occurred_at`. Durante la migración, las filas antiguas reciben el
+valor existente de `created_at`.
 
-## Database migrations
+## Migraciones de base de datos
 
-Install backend dependencies:
+Instala las dependencias del backend:
 
 ```powershell
 backend\venv\Scripts\python.exe -m pip install -r backend\requirements.txt
 ```
 
-For a new database, apply all migrations from the repository root:
+Para una base de datos nueva, aplica todas las migraciones desde la raíz del
+repositorio:
 
 ```powershell
 backend\venv\Scripts\python.exe scripts\create_tables.py
 ```
 
-For a database that was previously created with `Base.metadata.create_all`,
-adopt the baseline once and then upgrade:
+Para una base de datos creada previamente con `Base.metadata.create_all`,
+adopta la migración base una vez y luego actualiza:
 
 ```powershell
 backend\venv\Scripts\python.exe -m alembic -c alembic.ini stamp 20260609_0001
 backend\venv\Scripts\python.exe -m alembic -c alembic.ini upgrade head
 ```
 
-Do not run the `stamp` command on an empty database. New databases should run
-`upgrade head` directly.
+No ejecutes `stamp` sobre una base de datos vacía. Las bases nuevas deben
+ejecutar directamente `upgrade head`.
 
-Existing project keys are migrated to `ingest` because they may already be
-embedded in browser code. Create a new `read` key for each dashboard or trusted
-analytics client after upgrading.
+Las claves de proyecto existentes se migran a `ingest` porque podrían estar
+incluidas en código del navegador. Después de actualizar, crea una nueva clave
+`read` para cada dashboard o cliente de analítica confiable.
 
-## Run locally
+## Ejecución local
 
 Backend:
 
@@ -90,12 +142,12 @@ cd frontend
 npm run dev:3003
 ```
 
-Open `http://127.0.0.1:3003` and use either the master key or a project `read`
-key. The SDK demo must use a project `ingest` key.
+Abre `http://127.0.0.1:3003` y usa la master key o una clave de proyecto
+`read`. La demo del SDK debe usar una clave de proyecto `ingest`.
 
 ## Smoke tests
 
-With PostgreSQL and the backend running:
+Con PostgreSQL y el backend en ejecución:
 
 ```powershell
 python scripts\smoke_test_projects_auth.py
@@ -103,10 +155,12 @@ python scripts\smoke_test_events.py
 python scripts\smoke_test_sessions.py
 python scripts\smoke_test_funnels.py
 python scripts\smoke_test_ux_signals.py
+python scripts\smoke_test_heatmaps.py
 ```
 
-## Repository hygiene
+## Higiene del repositorio
 
-Virtual environments, `node_modules`, Python bytecode, build output, local
-environment files, and test caches are ignored. Dependencies should be
-recreated from the committed manifests instead of committed to Git.
+Los entornos virtuales, `node_modules`, bytecode de Python, artefactos de
+compilación, archivos locales de entorno y cachés de pruebas están ignorados.
+Las dependencias deben reconstruirse desde los manifiestos versionados, en
+lugar de subirse a Git.
