@@ -261,3 +261,45 @@ class ClickHeatmapResponse(BaseModel):
     document_intensity_zones: list[ClickHeatmapIntensityZoneResponse]
     document_height_summary: ClickHeatmapDocumentHeightSummaryResponse
     scroll_depth_summary: list[ClickHeatmapScrollDepthBucketResponse]
+
+
+class FormAnalyticsItemResponse(BaseModel):
+    project_id: str
+    form_id: str | None
+    form_name: str | None
+    form_index: int | None
+    page_path: str
+    starts: int
+    submits: int
+    abandons: int
+    submit_rate: float = Field(ge=0, le=100)
+    abandon_rate: float = Field(ge=0, le=100)
+    most_common_last_field: str | None
+    average_fields_touched_before_abandon: float = Field(ge=0)
+
+
+class FormAnalyticsSummaryResponse(BaseModel):
+    total_forms: int
+    total_form_starts: int
+    total_form_submits: int
+    total_form_abandons: int
+    overall_submit_rate: float = Field(ge=0, le=100)
+    overall_abandon_rate: float = Field(ge=0, le=100)
+    top_forms_by_starts: list[FormAnalyticsItemResponse]
+    top_forms_by_abandonment: list[FormAnalyticsItemResponse]
+    top_forms_by_submit_rate: list[FormAnalyticsItemResponse]
+
+
+class FormFieldAnalyticsResponse(BaseModel):
+    project_id: str
+    form_id: str | None
+    form_name: str | None
+    page_path: str
+    field_id: str | None
+    field_name: str | None
+    field_type: str
+    field_index: int | None
+    focus_count: int
+    blur_count: int
+    abandon_count_as_last_field: int
+    average_time_on_field_ms: float = Field(ge=0)
