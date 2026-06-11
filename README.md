@@ -7,10 +7,16 @@ FastAPI, PostgreSQL, Next.js y un SDK TypeScript para navegador.
 
 - Event Tracking API con ingesta individual y por lotes.
 - SDK TypeScript para navegador que captura vistas de página, clics,
-  profundidad de desplazamiento y eventos personalizados.
-- Dashboard en Next.js con eventos, sesiones, embudos y señales UX.
+  profundidad de desplazamiento, eventos personalizados y actividad
+  estructural de formularios.
+- Dashboard en Next.js con eventos, sesiones, embudos, señales UX y Form
+  Analytics.
 - Analítica de sesiones y análisis ordenado de embudos.
 - Detección de Rage Clicks y Dead Clicks.
+- Form Analytics con detección de abandono, métricas de formularios iniciados,
+  enviados y abandonados.
+- Field-level friction analysis para identificar los campos con mayor
+  fricción sin capturar valores escritos.
 - Mapas de clics por viewport y mapas de página completa sensibles al
   desplazamiento.
 - Segmentación por desktop, tablet, mobile y unknown.
@@ -26,9 +32,10 @@ FastAPI, PostgreSQL, Next.js y un SDK TypeScript para navegador.
 - `backend/`: API FastAPI, modelos SQLAlchemy, servicios de analítica y
   migraciones Alembic.
 - `frontend/`: dashboard en Next.js para eventos, sesiones, embudos, señales
-  UX y mapas de clics.
+  UX, formularios y mapas de clics.
 - `sdk/`: SDK para navegador que captura vistas de página, clics, profundidad
-  de desplazamiento y eventos personalizados.
+  de desplazamiento, eventos personalizados y metadata estructural segura de
+  formularios.
 - `scripts/`: utilidades de base de datos y smoke tests de extremo a extremo.
 
 ## Capturas
@@ -48,6 +55,10 @@ FastAPI, PostgreSQL, Next.js y un SDK TypeScript para navegador.
 ### Señales UX
 
 ![Señales UX de UXPulse](docs/screenshots/ux-signals.png)
+
+### Form Analytics
+
+![Form Analytics de UXPulse](docs/screenshots/form-analytics.png)
 
 ### Mapa de clics por viewport
 
@@ -84,6 +95,12 @@ Crea una clave de proyecto con permisos definidos:
 ```
 
 Usa `"key_type": "read"` para una clave destinada al dashboard.
+
+## Privacidad
+
+La captura de formularios sigue un enfoque privacy-by-design. UXPulse no
+recopila valores de formularios, contraseñas, textos escritos, selecciones ni
+estados `checked`; solo utiliza metadata estructural segura para la analítica.
 
 ## Tiempo de los eventos
 
@@ -156,6 +173,7 @@ python scripts\smoke_test_sessions.py
 python scripts\smoke_test_funnels.py
 python scripts\smoke_test_ux_signals.py
 python scripts\smoke_test_heatmaps.py
+python scripts\smoke_test_forms.py
 ```
 
 ## Higiene del repositorio
