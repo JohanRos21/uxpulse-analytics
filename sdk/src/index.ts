@@ -4,6 +4,7 @@ export type UXPulseConfig = {
   autoTrackPageView?: boolean;
   autoTrackClicks?: boolean;
   autoTrackScroll?: boolean;
+  autoTrackForms?: boolean;
 };
 
 export type TrackData = {
@@ -31,6 +32,29 @@ type EventPayload = TrackData & {
   occurred_at: string;
 };
 
+type FormAbandonReason =
+  | "page_unload"
+  | "route_change"
+  | "visibility_hidden"
+  | "unknown";
+
+type SafeFieldMetadata = {
+  field_id?: string;
+  field_name?: string;
+  field_type: string;
+  field_index: number;
+  field_required: boolean;
+};
+
+type FormTrackingState = {
+  started: boolean;
+  submitted: boolean;
+  abandoned: boolean;
+  touchedFields: Set<string>;
+  focusedAt: WeakMap<Element, number>;
+  lastField: SafeFieldMetadata | null;
+};
+
 const SESSION_STORAGE_KEY = "uxpulse_session_id";
 const ANONYMOUS_USER_STORAGE_KEY = "uxpulse_anonymous_user_id";
 const MAX_TEXT_LENGTH = 300;
@@ -39,10 +63,14 @@ const SCROLL_MILESTONES = [25, 50, 75, 100];
 let currentConfig: UXPulseConfig | null = null;
 let clickListenerAttached = false;
 let scrollListenerAttached = false;
+let formListenerAttached = false;
+let historyListenerAttached = false;
 let pageViewTracked = false;
 let maxScrollDepth = 0;
 let lastScrollMilestone = 0;
 let scrollTimeoutId: number | null = null;
+let trackedPagePath = "";
+const formStates = new Map<HTMLFormElement, FormTrackingState>();
 
 function isBrowser(): boolean {
   return typeof window !== "undefined" && typeof document !== "undefined";
@@ -261,6 +289,163 @@ function getTrackableElement(target: EventTarget | null): Element | null {
   return target.closest("button,a,[role='button'],input,textarea,select,label,[data-uxpulse-id]") || target;
 }
 
+function sanitizeStructuralIdentifier(
+  value: string | null | undefined,
+  maxLength = 160,
+): string | undefined {
+  if (!value) {
+    return undefined;
+  }
+
+  const normalized = value.trim();
+  if (
+    !normalized
+    || normalized.includes("@")
+    || /\d{7,}/.test(normalized)
+  ) {
+    return undefined;
+  }
+
+  return normalized.slice(0, maxLength);
+}
+
+function getFormActionPath(form: HTMLFormElement): string | undefined {
+  const action = form.getAttribute("action");
+  if (!action || action.startsWith("javascript:")) {
+    return isBrowser() ? window.location.pathname : undefined;
+  }
+
+  try {
+    return new URL(action, window.location.href).pathname;
+  } catch {
+    return window.location.pathname;
+  }
+}
+
+function isTrackableFormField(element: Element): element is HTMLInputElement | HTMLTextAreaElement | HTMLSelectElement {
+  if (
+    !(element instanceof HTMLInputElement)
+    && !(element instanceof HTMLTextAreaElement)
+    && !(element instanceof HTMLSelectElement)
+  ) {
+    return false;
+  }
+
+  if (element instanceof HTMLInputElement) {
+    return !["hidden", "submit", "button", "reset", "image"].includes(
+      element.type.toLowerCase(),
+    );
+  }
+
+  return true;
+}
+
+function getFormFields(
+  form: HTMLFormElement,
+): Array<HTMLInputElement | HTMLTextAreaElement | HTMLSelectElement> {
+  return Array.from(form.elements).filter(isTrackableFormField);
+}
+
+function getFieldType(
+  field: HTMLInputElement | HTMLTextAreaElement | HTMLSelectElement,
+): string {
+  if (field instanceof HTMLInputElement) {
+    return field.type.toLowerCase() || "text";
+  }
+
+  if (field instanceof HTMLSelectElement) {
+    return field.multiple ? "select-multiple" : "select-one";
+  }
+
+  return "textarea";
+}
+
+function getSafeFieldMetadata(
+  form: HTMLFormElement,
+  field: HTMLInputElement | HTMLTextAreaElement | HTMLSelectElement,
+): SafeFieldMetadata {
+  const fields = getFormFields(form);
+  const fieldType = getFieldType(field);
+  const baseMetadata: SafeFieldMetadata = {
+    field_type: fieldType,
+    field_index: Math.max(0, fields.indexOf(field)),
+    field_required: field.required,
+  };
+
+  if (fieldType === "password") {
+    return baseMetadata;
+  }
+
+  const fieldId = sanitizeStructuralIdentifier(field.id, 200);
+  const fieldName = sanitizeStructuralIdentifier(field.name, 200);
+
+  return {
+    ...baseMetadata,
+    ...(fieldId ? { field_id: fieldId } : {}),
+    ...(fieldName ? { field_name: fieldName } : {}),
+  };
+}
+
+function getSafeFormMetadata(form: HTMLFormElement): Record<string, unknown> {
+  const formId = sanitizeStructuralIdentifier(form.id, 200);
+  const formName = sanitizeStructuralIdentifier(form.name, 200);
+  const formIndex = Math.max(0, Array.from(document.forms).indexOf(form));
+
+  return {
+    ...(formId ? { form_id: formId } : {}),
+    ...(formName ? { form_name: formName } : {}),
+    form_index: formIndex,
+    form_action_path: getFormActionPath(form),
+    page_path: window.location.pathname,
+    total_fields_count: getFormFields(form).length,
+  };
+}
+
+function getFormState(form: HTMLFormElement): FormTrackingState {
+  const existingState = formStates.get(form);
+  if (existingState) {
+    return existingState;
+  }
+
+  const state: FormTrackingState = {
+    started: false,
+    submitted: false,
+    abandoned: false,
+    touchedFields: new Set<string>(),
+    focusedAt: new WeakMap<Element, number>(),
+    lastField: null,
+  };
+  formStates.set(form, state);
+  return state;
+}
+
+function fieldTrackingKey(field: SafeFieldMetadata): string {
+  return [
+    field.field_id || "",
+    field.field_name || "",
+    field.field_type,
+    String(field.field_index),
+  ].join(":");
+}
+
+function formProgressMetadata(
+  form: HTMLFormElement,
+  state: FormTrackingState,
+): Record<string, unknown> {
+  return {
+    ...getSafeFormMetadata(form),
+    fields_touched_count: state.touchedFields.size,
+    ...(state.lastField
+      ? {
+          last_field_id: state.lastField.field_id,
+          last_field_name: state.lastField.field_name,
+          last_field_type: state.lastField.field_type,
+          last_field_index: state.lastField.field_index,
+        }
+      : {}),
+  };
+}
+
 function sanitizeMetadataValue(value: unknown): unknown {
   if (Array.isArray(value)) {
     return value.map((item) => sanitizeMetadataValue(item));
@@ -385,6 +570,206 @@ function attachScrollTracking(): void {
   scrollListenerAttached = true;
 }
 
+async function ensureFormStarted(
+  form: HTMLFormElement,
+  state: FormTrackingState,
+): Promise<void> {
+  if (state.started) {
+    return;
+  }
+
+  state.started = true;
+  await sendEvent("form_start", {
+    ...getPageData(),
+    ...getViewportData(),
+    metadata: getSafeFormMetadata(form),
+  });
+}
+
+async function handleFormFocus(event: FocusEvent): Promise<void> {
+  if (!(event.target instanceof Element) || !isTrackableFormField(event.target)) {
+    return;
+  }
+
+  const field = event.target;
+  const form = field.form;
+  if (!form) {
+    return;
+  }
+
+  const state = getFormState(form);
+  await ensureFormStarted(form, state);
+
+  const fieldMetadata = getSafeFieldMetadata(form, field);
+  state.touchedFields.add(fieldTrackingKey(fieldMetadata));
+  state.lastField = fieldMetadata;
+  state.focusedAt.set(field, performance.now());
+
+  await sendEvent("form_field_focus", {
+    ...getPageData(),
+    ...getViewportData(),
+    metadata: {
+      ...getSafeFormMetadata(form),
+      ...fieldMetadata,
+      fields_touched_count: state.touchedFields.size,
+    },
+  });
+}
+
+async function handleFormBlur(event: FocusEvent): Promise<void> {
+  if (!(event.target instanceof Element) || !isTrackableFormField(event.target)) {
+    return;
+  }
+
+  const field = event.target;
+  const form = field.form;
+  if (!form) {
+    return;
+  }
+
+  const state = getFormState(form);
+  if (!state.started) {
+    return;
+  }
+
+  const fieldMetadata = getSafeFieldMetadata(form, field);
+  const focusedAt = state.focusedAt.get(field);
+  const timeOnFieldMs =
+    focusedAt === undefined
+      ? undefined
+      : Math.max(0, Math.round(performance.now() - focusedAt));
+
+  state.lastField = fieldMetadata;
+  state.focusedAt.delete(field);
+
+  await sendEvent("form_field_blur", {
+    ...getPageData(),
+    ...getViewportData(),
+    metadata: {
+      ...getSafeFormMetadata(form),
+      ...fieldMetadata,
+      fields_touched_count: state.touchedFields.size,
+      ...(timeOnFieldMs !== undefined
+        ? { time_on_field_ms: timeOnFieldMs }
+        : {}),
+    },
+  });
+}
+
+async function handleFormSubmit(event: SubmitEvent): Promise<void> {
+  if (!(event.target instanceof HTMLFormElement)) {
+    return;
+  }
+
+  const form = event.target;
+  const state = getFormState(form);
+  await ensureFormStarted(form, state);
+  state.submitted = true;
+
+  await sendEvent("form_submit", {
+    ...getPageData(),
+    ...getViewportData(),
+    metadata: formProgressMetadata(form, state),
+  });
+}
+
+function abandonActiveForms(reason: FormAbandonReason): void {
+  for (const [form, state] of formStates.entries()) {
+    if (!state.started || state.submitted || state.abandoned) {
+      continue;
+    }
+
+    state.abandoned = true;
+    void sendEvent("form_abandon", {
+      page_url: window.location.href,
+      page_path: trackedPagePath || window.location.pathname,
+      ...getViewportData(),
+      metadata: {
+        ...formProgressMetadata(form, state),
+        page_path: trackedPagePath || window.location.pathname,
+        abandon_reason: reason,
+      },
+    });
+  }
+}
+
+function handleFormPageHide(): void {
+  abandonActiveForms("page_unload");
+}
+
+function handleFormVisibilityChange(): void {
+  if (document.visibilityState === "hidden") {
+    abandonActiveForms("visibility_hidden");
+  }
+}
+
+function handleFormRouteChange(): void {
+  const nextPath = window.location.pathname;
+  if (nextPath === trackedPagePath) {
+    return;
+  }
+
+  abandonActiveForms("route_change");
+  formStates.clear();
+  trackedPagePath = nextPath;
+}
+
+function patchHistoryForFormTracking(): void {
+  if (historyListenerAttached) {
+    return;
+  }
+
+  const originalPushState = window.history.pushState;
+  const originalReplaceState = window.history.replaceState;
+
+  window.history.pushState = function pushState(...args): void {
+    abandonActiveForms("route_change");
+    formStates.clear();
+    originalPushState.apply(this, args);
+    trackedPagePath = window.location.pathname;
+  };
+
+  window.history.replaceState = function replaceState(...args): void {
+    abandonActiveForms("route_change");
+    formStates.clear();
+    originalReplaceState.apply(this, args);
+    trackedPagePath = window.location.pathname;
+  };
+
+  window.addEventListener("popstate", handleFormRouteChange);
+  historyListenerAttached = true;
+}
+
+function attachFormTracking(): void {
+  if (!isBrowser() || formListenerAttached) {
+    return;
+  }
+
+  trackedPagePath = window.location.pathname;
+  document.addEventListener(
+    "focusin",
+    (event) => void handleFormFocus(event),
+    true,
+  );
+  document.addEventListener(
+    "focusout",
+    (event) => void handleFormBlur(event),
+    true,
+  );
+  document.addEventListener(
+    "submit",
+    (event) => void handleFormSubmit(event),
+    true,
+  );
+  window.addEventListener("pagehide", handleFormPageHide);
+  document.addEventListener(
+    "visibilitychange",
+    handleFormVisibilityChange,
+  );
+  patchHistoryForFormTracking();
+  formListenerAttached = true;
+}
+
 function handleDocumentClick(event: MouseEvent): void {
   void trackClick(event);
 }
@@ -456,6 +841,10 @@ export function init(config: UXPulseConfig): void {
 
   if (config.autoTrackScroll) {
     attachScrollTracking();
+  }
+
+  if (config.autoTrackForms !== false) {
+    attachFormTracking();
   }
 }
 

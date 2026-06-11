@@ -18,6 +18,9 @@ from app.schemas import (
     EventCreate,
     EventResponse,
     EventSummaryResponse,
+    FormAnalyticsItemResponse,
+    FormAnalyticsSummaryResponse,
+    FormFieldAnalyticsResponse,
     FunnelAnalyzeRequest,
     FunnelAnalyzeResponse,
     ProjectCreate,
@@ -37,6 +40,11 @@ from app.services.event_service import (
     list_events,
 )
 from app.services.funnel_service import analyze_funnel
+from app.services.form_analytics_service import (
+    get_form_abandonment,
+    get_form_fields,
+    get_forms_summary,
+)
 from app.services.heatmap_service import get_click_heatmap
 from app.services.project_service import (
     create_project,
@@ -380,6 +388,55 @@ def get_events_summary_endpoint(
     effective_project_id = resolve_analytics_project_id(auth, project_id)
     summary = get_events_summary(db, project_id=effective_project_id)
     return EventSummaryResponse(**summary)
+
+
+@app.get("/v1/forms/summary", response_model=FormAnalyticsSummaryResponse)
+def get_forms_summary_endpoint(
+    project_id: str | None = None,
+    auth=Depends(require_read_permission),
+    db: Session = Depends(get_db),
+):
+    effective_project_id = resolve_analytics_project_id(auth, project_id)
+    summary = get_forms_summary(db, project_id=effective_project_id)
+    return FormAnalyticsSummaryResponse(**summary)
+
+
+@app.get(
+    "/v1/forms/abandonment",
+    response_model=list[FormAnalyticsItemResponse],
+)
+def get_form_abandonment_endpoint(
+    project_id: str | None = None,
+    limit: int = Query(default=100, ge=1, le=1000),
+    auth=Depends(require_read_permission),
+    db: Session = Depends(get_db),
+):
+    effective_project_id = resolve_analytics_project_id(auth, project_id)
+    forms = get_form_abandonment(
+        db,
+        project_id=effective_project_id,
+        limit=limit,
+    )
+    return [FormAnalyticsItemResponse(**form) for form in forms]
+
+
+@app.get(
+    "/v1/forms/fields",
+    response_model=list[FormFieldAnalyticsResponse],
+)
+def get_form_fields_endpoint(
+    project_id: str | None = None,
+    limit: int = Query(default=100, ge=1, le=1000),
+    auth=Depends(require_read_permission),
+    db: Session = Depends(get_db),
+):
+    effective_project_id = resolve_analytics_project_id(auth, project_id)
+    fields = get_form_fields(
+        db,
+        project_id=effective_project_id,
+        limit=limit,
+    )
+    return [FormFieldAnalyticsResponse(**field) for field in fields]
 
 
 @app.get("/v1/sessions", response_model=list[SessionResponse])

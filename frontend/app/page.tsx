@@ -1,6 +1,6 @@
 "use client";
 
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 
 const API_BASE_URL = "http://127.0.0.1:8002";
 const TOKEN_STORAGE_KEY = "uxpulse_dashboard_token";
@@ -189,9 +189,58 @@ type ClickHeatmapResponse = {
   scroll_depth_summary: ClickHeatmapScrollDepthBucket[];
 };
 
+type FormAnalyticsItem = {
+  project_id: string;
+  form_id: string | null;
+  form_name: string | null;
+  form_index: number | null;
+  page_path: string;
+  starts: number;
+  submits: number;
+  abandons: number;
+  submit_rate: number;
+  abandon_rate: number;
+  most_common_last_field: string | null;
+  average_fields_touched_before_abandon: number;
+};
+
+type FormAnalyticsSummary = {
+  total_forms: number;
+  total_form_starts: number;
+  total_form_submits: number;
+  total_form_abandons: number;
+  overall_submit_rate: number;
+  overall_abandon_rate: number;
+  top_forms_by_starts: FormAnalyticsItem[];
+  top_forms_by_abandonment: FormAnalyticsItem[];
+  top_forms_by_submit_rate: FormAnalyticsItem[];
+};
+
+type FormFieldAnalytics = {
+  project_id: string;
+  form_id: string | null;
+  form_name: string | null;
+  page_path: string;
+  field_id: string | null;
+  field_name: string | null;
+  field_type: string;
+  field_index: number | null;
+  focus_count: number;
+  blur_count: number;
+  abandon_count_as_last_field: number;
+  average_time_on_field_ms: number;
+};
+
 type ApiError = {
   status: number;
   message: string;
+};
+
+type AuthContext = {
+  auth_type: "master" | "project";
+  project_id: string | null;
+  project_status: string | null;
+  key_type: "master" | "ingest" | "read" | null;
 };
 
 type MetricCardProps = {
@@ -226,6 +275,18 @@ const emptyUXSignalsSummary: UXSignalsSummary = {
   high_severity_count: 0,
   medium_severity_count: 0,
   low_severity_count: 0,
+};
+
+const emptyFormAnalyticsSummary: FormAnalyticsSummary = {
+  total_forms: 0,
+  total_form_starts: 0,
+  total_form_submits: 0,
+  total_form_abandons: 0,
+  overall_submit_rate: 0,
+  overall_abandon_rate: 0,
+  top_forms_by_starts: [],
+  top_forms_by_abandonment: [],
+  top_forms_by_submit_rate: [],
 };
 
 const emptyClickHeatmap: ClickHeatmapResponse = {
@@ -270,7 +331,7 @@ function formatDate(value: string): string {
     return value;
   }
 
-  return new Intl.DateTimeFormat(undefined, {
+  return new Intl.DateTimeFormat("es-PE", {
     dateStyle: "medium",
     timeStyle: "short",
   }).format(date);
@@ -292,10 +353,51 @@ function sortCounts(record: Record<string, number>): [string, number][] {
 
 function displayPage(value: string | null | undefined): string {
   if (!value || value.toLowerCase() === "unknown") {
-    return "Unknown page";
+    return "Página desconocida";
   }
 
   return value;
+}
+
+function displayForm(form: Pick<FormAnalyticsItem, "form_id" | "form_name" | "form_index">): string {
+  if (form.form_id) {
+    return `#${form.form_id}`;
+  }
+
+  if (form.form_name) {
+    return form.form_name;
+  }
+
+  return form.form_index !== null
+    ? `Formulario ${form.form_index + 1}`
+    : "Formulario desconocido";
+}
+
+function displayFormField(
+  field: Pick<
+    FormFieldAnalytics,
+    "field_id" | "field_name" | "field_type" | "field_index"
+  >,
+): string {
+  if (field.field_id) {
+    return `#${field.field_id}`;
+  }
+
+  if (field.field_name) {
+    return field.field_name;
+  }
+
+  return field.field_index !== null
+    ? `${field.field_type} (${field.field_index + 1})`
+    : field.field_type;
+}
+
+function formatMilliseconds(milliseconds: number): string {
+  if (milliseconds < 1000) {
+    return `${Math.round(milliseconds)} ms`;
+  }
+
+  return `${(milliseconds / 1000).toFixed(2)} s`;
 }
 
 function displaySignalElement(signal: RageClickSignal): string {
@@ -304,10 +406,10 @@ function displaySignalElement(signal: RageClickSignal): string {
   }
 
   if (signal.x !== null && signal.y !== null) {
-    return `Coordinate zone (${Math.round(signal.x)}, ${Math.round(signal.y)})`;
+    return `Zona de coordenadas (${Math.round(signal.x)}, ${Math.round(signal.y)})`;
   }
 
-  return "Coordinate zone";
+  return "Zona de coordenadas";
 }
 
 function displayDeadClickElement(signal: DeadClickSignal): string {
@@ -316,23 +418,33 @@ function displayDeadClickElement(signal: DeadClickSignal): string {
   }
 
   if (signal.x !== null && signal.y !== null) {
-    return `Coordinate zone (${Math.round(signal.x)}, ${Math.round(signal.y)})`;
+    return `Zona de coordenadas (${Math.round(signal.x)}, ${Math.round(signal.y)})`;
   }
 
-  return "Coordinate zone";
+  return "Zona de coordenadas";
 }
 
 function displayElementRanking(value: string): string {
-  return value === "coordinate_zone" ? "Coordinate zone" : `#${value}`;
+  return value === "coordinate_zone" ? "Zona de coordenadas" : `#${value}`;
 }
 
 function displayViewportSegment(segment: ViewportSegment): string {
   return {
-    mobile: "Mobile",
+    mobile: "Móvil",
     tablet: "Tablet",
-    desktop: "Desktop",
-    unknown: "Unknown",
+    desktop: "Escritorio",
+    unknown: "Desconocido",
   }[segment];
+}
+
+function displaySeverity(
+  severity: RageClickSignal["severity"] | DeadClickSignal["severity"],
+): string {
+  return {
+    low: "Baja",
+    medium: "Media",
+    high: "Alta",
+  }[severity];
 }
 
 function severityClasses(
@@ -354,11 +466,11 @@ function describeFunnelStep(
   const conditions = [step.event_type];
 
   if (step.page_path) {
-    conditions.push(`page: ${step.page_path}`);
+    conditions.push(`página: ${step.page_path}`);
   }
 
   if (step.element_id) {
-    conditions.push(`element: #${step.element_id}`);
+    conditions.push(`elemento: #${step.element_id}`);
   }
 
   return conditions.join(" | ");
@@ -395,7 +507,7 @@ function readBackendMessage(payload: unknown): string | null {
 }
 
 async function parseApiError(response: Response): Promise<ApiError> {
-  const fallback = response.statusText || "Request failed";
+  const fallback = response.statusText || "La solicitud falló";
   const responseText = await response.text();
 
   if (!responseText) {
@@ -443,20 +555,24 @@ async function fetchJson<T>(
   return (await response.json()) as T;
 }
 
+function normalizeToken(value: string): string {
+  return value.trim().replace(/^Bearer\s+/i, "").trim();
+}
+
 function StatusPill({ health }: { health: HealthState }) {
   const status = {
     checking: {
-      label: "Checking",
+      label: "Comprobando",
       classes: "border-amber-200 bg-amber-50 text-amber-800",
       dot: "bg-amber-500",
     },
     online: {
-      label: "Online",
+      label: "En línea",
       classes: "border-emerald-200 bg-emerald-50 text-emerald-700",
       dot: "bg-emerald-500",
     },
     offline: {
-      label: "Offline",
+      label: "Sin conexión",
       classes: "border-rose-200 bg-rose-50 text-rose-700",
       dot: "bg-rose-500",
     },
@@ -502,12 +618,17 @@ function EmptyState({ children }: { children: React.ReactNode }) {
 }
 
 export default function Home() {
+  const tokenInputRef = useRef<HTMLInputElement>(null);
   const [tokenInput, setTokenInput] = useState("");
   const [savedToken, setSavedToken] = useState("");
+  const [isTokenVisible, setIsTokenVisible] = useState(false);
   const [health, setHealth] = useState<HealthState>("checking");
   const [summary, setSummary] = useState<EventsSummary>(emptySummary);
   const [sessionsSummary, setSessionsSummary] = useState<SessionsSummary>(emptySessionsSummary);
   const [uxSignalsSummary, setUXSignalsSummary] = useState<UXSignalsSummary>(emptyUXSignalsSummary);
+  const [formAnalyticsSummary, setFormAnalyticsSummary] = useState<FormAnalyticsSummary>(emptyFormAnalyticsSummary);
+  const [formAbandonment, setFormAbandonment] = useState<FormAnalyticsItem[]>([]);
+  const [formFields, setFormFields] = useState<FormFieldAnalytics[]>([]);
   const [events, setEvents] = useState<AnalyticsEvent[]>([]);
   const [sessions, setSessions] = useState<AnalyticsSession[]>([]);
   const [rageClicks, setRageClicks] = useState<RageClickSignal[]>([]);
@@ -549,6 +670,7 @@ export default function Home() {
     [uxSignalsSummary.dead_clicks_by_element],
   );
   const topDeadPage = deadClicksByPage[0];
+  const mostProblematicField = formFields[0];
   const heatmapPages = useMemo(
     () => sortCounts(clickHeatmap.pages),
     [clickHeatmap.pages],
@@ -699,13 +821,16 @@ export default function Home() {
     }
   }, []);
 
-  const loadAnalytics = useCallback(async (token: string) => {
-    const trimmedToken = token.trim();
+  const loadAnalytics = useCallback(async (token: string): Promise<boolean> => {
+    const trimmedToken = normalizeToken(token);
 
     if (!trimmedToken) {
       setSummary(emptySummary);
       setSessionsSummary(emptySessionsSummary);
       setUXSignalsSummary(emptyUXSignalsSummary);
+      setFormAnalyticsSummary(emptyFormAnalyticsSummary);
+      setFormAbandonment([]);
+      setFormFields([]);
       setEvents([]);
       setSessions([]);
       setRageClicks([]);
@@ -718,13 +843,15 @@ export default function Home() {
       setHeatmapError(null);
       setError(null);
       setLastUpdated(null);
-      return;
+      return false;
     }
 
     setIsLoading(true);
     setError(null);
 
     try {
+      await fetchJson<AuthContext>("/v1/auth/whoami", trimmedToken);
+
       const [
         nextSummary,
         nextEvents,
@@ -734,6 +861,9 @@ export default function Home() {
         nextRageClicks,
         nextDeadClicks,
         nextClickHeatmap,
+        nextFormAnalyticsSummary,
+        nextFormAbandonment,
+        nextFormFields,
       ] = await Promise.all([
         fetchJson<EventsSummary>("/v1/events/summary", trimmedToken),
         fetchJson<AnalyticsEvent[]>("/v1/events?limit=25", trimmedToken),
@@ -743,6 +873,9 @@ export default function Home() {
         fetchJson<RageClickSignal[]>("/v1/ux-signals/rage-clicks?limit=25", trimmedToken),
         fetchJson<DeadClickSignal[]>("/v1/ux-signals/dead-clicks?limit=25", trimmedToken),
         fetchJson<ClickHeatmapResponse>("/v1/heatmaps/clicks?limit=1000", trimmedToken),
+        fetchJson<FormAnalyticsSummary>("/v1/forms/summary", trimmedToken),
+        fetchJson<FormAnalyticsItem[]>("/v1/forms/abandonment?limit=25", trimmedToken),
+        fetchJson<FormFieldAnalytics[]>("/v1/forms/fields?limit=25", trimmedToken),
       ]);
 
       setSummary(nextSummary);
@@ -754,16 +887,33 @@ export default function Home() {
       setDeadClicks(nextDeadClicks);
       setClickHeatmap(nextClickHeatmap);
       setHeatmapView(nextClickHeatmap);
+      setFormAnalyticsSummary(nextFormAnalyticsSummary);
+      setFormAbandonment(nextFormAbandonment);
+      setFormFields(nextFormFields);
       setLastUpdated(new Date().toLocaleTimeString());
+      return true;
     } catch (nextError) {
       if (nextError && typeof nextError === "object" && "status" in nextError) {
-        setError(nextError as ApiError);
+        const apiError = nextError as ApiError;
+        setError({
+          ...apiError,
+          message:
+            apiError.status === 401
+              ? "La clave enviada no coincide con ninguna API key válida. Borra el token guardado y vuelve a pegarlo desde el archivo .env."
+              : apiError.message,
+        });
+
+        if (apiError.status === 401) {
+          window.localStorage.removeItem(TOKEN_STORAGE_KEY);
+          setSavedToken("");
+        }
       } else {
         setError({
           status: 0,
-          message: nextError instanceof Error ? nextError.message : "Unable to load analytics.",
+          message: nextError instanceof Error ? nextError.message : "No se pudieron cargar los datos.",
         });
       }
+      return false;
     } finally {
       setIsLoading(false);
     }
@@ -811,7 +961,7 @@ export default function Home() {
             message:
               nextError instanceof Error
                 ? nextError.message
-                : "Unable to load filtered heatmap data.",
+                : "No se pudieron cargar los datos filtrados del mapa de clics.",
           });
         }
       } finally {
@@ -844,7 +994,7 @@ export default function Home() {
     if (!savedToken) {
       setFunnelError({
         status: 0,
-        message: "Save a master key or project API key before analyzing a funnel.",
+        message: "Guarda una master key o una API key de proyecto antes de analizar un embudo.",
       });
       return;
     }
@@ -874,7 +1024,7 @@ export default function Home() {
       } else {
         setFunnelError({
           status: 0,
-          message: nextError instanceof Error ? nextError.message : "Unable to analyze funnel.",
+          message: nextError instanceof Error ? nextError.message : "No se pudo analizar el embudo.",
         });
       }
     } finally {
@@ -898,31 +1048,44 @@ export default function Home() {
     return () => window.clearTimeout(initializeDashboardTimeout);
   }, [loadAnalytics, loadHealth]);
 
-  function handleSaveToken() {
-    const trimmedToken = tokenInput.trim();
+  async function handleSaveToken() {
+    const currentToken = tokenInputRef.current?.value ?? tokenInput;
+    const trimmedToken = normalizeToken(currentToken);
 
     if (!trimmedToken) {
       setError({
         status: 0,
-        message: "Paste a token before saving.",
+        message: "Pega un token antes de guardarlo.",
       });
+      return;
+    }
+
+    setTokenInput(trimmedToken);
+    setFunnelResult(null);
+    setFunnelError(null);
+    const isValid = await loadAnalytics(trimmedToken);
+
+    if (!isValid) {
+      window.localStorage.removeItem(TOKEN_STORAGE_KEY);
+      setSavedToken("");
       return;
     }
 
     window.localStorage.setItem(TOKEN_STORAGE_KEY, trimmedToken);
     setSavedToken(trimmedToken);
-    setFunnelResult(null);
-    setFunnelError(null);
-    void loadAnalytics(trimmedToken);
   }
 
   function handleClearToken() {
     window.localStorage.removeItem(TOKEN_STORAGE_KEY);
     setTokenInput("");
     setSavedToken("");
+    setIsTokenVisible(false);
     setSummary(emptySummary);
     setSessionsSummary(emptySessionsSummary);
     setUXSignalsSummary(emptyUXSignalsSummary);
+    setFormAnalyticsSummary(emptyFormAnalyticsSummary);
+    setFormAbandonment([]);
+    setFormFields([]);
     setEvents([]);
     setSessions([]);
     setRageClicks([]);
@@ -940,6 +1103,12 @@ export default function Home() {
     clearFilters();
   }
 
+  function handleToggleTokenVisibility() {
+    const currentToken = tokenInputRef.current?.value ?? tokenInput;
+    setTokenInput(currentToken);
+    setIsTokenVisible((isVisible) => !isVisible);
+  }
+
   function clearFilters() {
     setEventTypeFilter("");
     setPagePathFilter("");
@@ -951,9 +1120,9 @@ export default function Home() {
       <div className="mx-auto flex w-full max-w-[1440px] flex-col gap-5 px-4 py-5 sm:px-6 lg:px-8 lg:py-7">
         <header className="flex flex-col gap-5 border-b border-slate-200 pb-6 lg:flex-row lg:items-end lg:justify-between">
           <div>
-            <p className="mb-2 text-xs font-semibold uppercase tracking-wider text-sky-700">Dashboard V1.1</p>
+            <p className="mb-2 text-xs font-semibold uppercase tracking-wider text-sky-700">Panel V1.1</p>
             <h1 className="text-3xl font-semibold tracking-tight sm:text-4xl">UXPulse Analytics</h1>
-            <p className="mt-2 text-sm text-slate-600 sm:text-base">Self-hosted UX behavior analytics</p>
+            <p className="mt-2 text-sm text-slate-600 sm:text-base">Analítica autohospedada del comportamiento UX</p>
           </div>
 
           <div className="flex flex-wrap items-center gap-3">
@@ -964,7 +1133,7 @@ export default function Home() {
               disabled={isLoading}
               className="h-10 rounded-lg bg-slate-950 px-4 text-sm font-semibold text-white transition hover:bg-slate-800 disabled:cursor-not-allowed disabled:opacity-60"
             >
-              {isLoading ? "Refreshing..." : "Refresh data"}
+              {isLoading ? "Actualizando..." : "Actualizar datos"}
             </button>
           </div>
         </header>
@@ -972,68 +1141,81 @@ export default function Home() {
         <section className="rounded-lg border border-slate-200 bg-white p-4 shadow-sm sm:p-5">
           <div className="flex flex-col gap-1 sm:flex-row sm:items-center sm:justify-between">
             <div>
-              <h2 className="text-sm font-semibold text-slate-900">Analytics read token</h2>
-              <p className="text-xs text-slate-500">Stored only in this browser&apos;s localStorage.</p>
+              <h2 className="text-sm font-semibold text-slate-900">Token de lectura de analítica</h2>
+              <p className="text-xs text-slate-500">Guardado únicamente en el localStorage de este navegador.</p>
             </div>
             {lastUpdated ? (
-              <p className="text-xs text-slate-500">Last updated at {lastUpdated}</p>
+              <p className="text-xs text-slate-500">Última actualización: {lastUpdated}</p>
             ) : null}
           </div>
 
           <div className="mt-3 flex flex-col gap-3 lg:flex-row">
-            <input
-              id="token"
-              type="password"
-              value={tokenInput}
-              onChange={(event) => setTokenInput(event.target.value)}
-              onKeyDown={(event) => {
-                if (event.key === "Enter") {
-                  handleSaveToken();
-                }
-              }}
-              placeholder="Paste a master key or project read API key"
-              className="h-11 min-w-0 flex-1 rounded-lg border border-slate-300 bg-white px-3 text-sm text-slate-950 outline-none transition focus:border-sky-500 focus:ring-2 focus:ring-sky-100"
-            />
+            <div className="relative min-w-0 flex-1">
+              <input
+                ref={tokenInputRef}
+                id="token"
+                type={isTokenVisible ? "text" : "password"}
+                value={tokenInput}
+                onChange={(event) => setTokenInput(event.target.value)}
+                onInput={(event) => setTokenInput(event.currentTarget.value)}
+                onKeyDown={(event) => {
+                  if (event.key === "Enter") {
+                    void handleSaveToken();
+                  }
+                }}
+                placeholder="Pega una master key o una API key de lectura"
+                autoComplete="off"
+                className="h-11 w-full rounded-lg border border-slate-300 bg-white py-2 pl-3 pr-24 text-sm text-slate-950 outline-none transition focus:border-sky-500 focus:ring-2 focus:ring-sky-100"
+              />
+              <button
+                type="button"
+                onClick={handleToggleTokenVisibility}
+                className="absolute inset-y-1 right-1 cursor-pointer rounded-md px-3 text-xs font-semibold text-slate-600 transition hover:bg-slate-100 hover:text-slate-950"
+                aria-label={isTokenVisible ? "Ocultar token" : "Mostrar token"}
+                title={isTokenVisible ? "Ocultar token" : "Mostrar token"}
+              >
+                {isTokenVisible ? "Ocultar" : "Mostrar"}
+              </button>
+            </div>
             <div className="grid grid-cols-2 gap-3 lg:flex">
               <button
                 type="button"
-                onClick={handleSaveToken}
+                onClick={() => void handleSaveToken()}
                 disabled={isLoading}
-                className="h-11 rounded-lg bg-sky-600 px-5 text-sm font-semibold text-white transition hover:bg-sky-700 disabled:cursor-not-allowed disabled:opacity-60"
+                className="h-11 cursor-pointer rounded-lg bg-sky-600 px-5 text-sm font-semibold text-white transition hover:bg-sky-700 disabled:cursor-not-allowed disabled:opacity-60"
               >
-                Save token
+                Guardar token
               </button>
               <button
                 type="button"
                 onClick={handleClearToken}
-                disabled={!tokenInput && !savedToken}
-                className="h-11 rounded-lg border border-slate-300 bg-white px-5 text-sm font-semibold text-slate-700 transition hover:bg-slate-50 disabled:cursor-not-allowed disabled:opacity-50"
+                className="h-11 cursor-pointer rounded-lg border border-slate-300 bg-white px-5 text-sm font-semibold text-slate-700 transition hover:bg-slate-50"
               >
-                Clear token
+                Borrar token
               </button>
             </div>
           </div>
 
-          {!savedToken ? (
-            <p className="mt-3 text-sm text-slate-500">Paste a master key or project read API key to load analytics.</p>
-          ) : (
-            <p className="mt-3 text-sm text-emerald-700">Token saved. Analytics access is ready.</p>
-          )}
+          {!savedToken && !error ? (
+            <p className="mt-3 text-sm text-slate-500">Pega una master key o una API key de lectura para cargar la analítica.</p>
+          ) : savedToken && !error ? (
+            <p className="mt-3 text-sm text-emerald-700">Token guardado. El acceso a la analítica está listo.</p>
+          ) : null}
         </section>
 
         {isLoading ? (
           <div className="flex items-center gap-3 rounded-lg border border-sky-200 bg-sky-50 px-4 py-3 text-sm text-sky-800">
             <span className="h-4 w-4 animate-spin rounded-full border-2 border-sky-200 border-t-sky-700" />
-            Loading analytics data...
+            Cargando datos de analítica...
           </div>
         ) : null}
 
         {error ? (
           <section className="rounded-lg border border-rose-200 bg-rose-50 p-4 text-rose-800" role="alert">
             <div className="flex flex-col gap-1 sm:flex-row sm:items-center sm:justify-between">
-              <h2 className="text-sm font-semibold">Unable to load analytics</h2>
+              <h2 className="text-sm font-semibold">No se pudo cargar la analítica</h2>
               <span className="text-xs font-semibold uppercase tracking-wide">
-                {error.status ? `HTTP ${error.status}` : "Connection error"}
+                {error.status ? `HTTP ${error.status}` : "Error de conexión"}
               </span>
             </div>
             <p className="mt-2 text-sm">{error.message}</p>
@@ -1042,27 +1224,27 @@ export default function Home() {
 
         <section className="grid gap-4 sm:grid-cols-2 xl:grid-cols-4">
           <MetricCard
-            label="Total Events"
+            label="Eventos totales"
             value={summary.total_events.toLocaleString()}
-            detail="All events visible to this token"
+            detail="Todos los eventos visibles para este token"
             accent="sky"
           />
           <MetricCard
-            label="Event Types Count"
+            label="Tipos de evento"
             value={eventsByType.length.toLocaleString()}
-            detail={eventsByType[0] ? `Most common: ${eventsByType[0][0]}` : "No event types yet"}
+            detail={eventsByType[0] ? `Más frecuente: ${eventsByType[0][0]}` : "Aún no hay tipos de evento"}
             accent="emerald"
           />
           <MetricCard
-            label="Top Page"
+            label="Página principal"
             value={displayPage(topPage?.[0])}
-            detail={topPage ? `${topPage[1].toLocaleString()} events` : "No page data yet"}
+            detail={topPage ? `${topPage[1].toLocaleString()} eventos` : "Aún no hay datos de páginas"}
             accent="amber"
           />
           <MetricCard
-            label="Recent Events Count"
+            label="Eventos recientes"
             value={events.length.toLocaleString()}
-            detail="Latest events currently loaded"
+            detail="Últimos eventos cargados"
             accent="violet"
           />
         </section>
@@ -1070,8 +1252,8 @@ export default function Home() {
         <section className="grid gap-4 xl:grid-cols-2">
           <article className="rounded-lg border border-slate-200 bg-white p-5 shadow-sm">
             <div>
-              <h2 className="text-base font-semibold">Events by Type</h2>
-              <p className="mt-1 text-sm text-slate-500">Event distribution sorted by volume</p>
+              <h2 className="text-base font-semibold">Eventos por tipo</h2>
+              <p className="mt-1 text-sm text-slate-500">Distribución de eventos ordenada por volumen</p>
             </div>
 
             <div className="mt-5 space-y-4">
@@ -1099,15 +1281,15 @@ export default function Home() {
                   );
                 })
               ) : (
-                <EmptyState>No event types to show yet.</EmptyState>
+                <EmptyState>Aún no hay tipos de evento para mostrar.</EmptyState>
               )}
             </div>
           </article>
 
           <article className="rounded-lg border border-slate-200 bg-white p-5 shadow-sm">
             <div>
-              <h2 className="text-base font-semibold">Top Pages</h2>
-              <p className="mt-1 text-sm text-slate-500">Pages sorted by event volume</p>
+              <h2 className="text-base font-semibold">Páginas principales</h2>
+              <p className="mt-1 text-sm text-slate-500">Páginas ordenadas por volumen de eventos</p>
             </div>
 
             <div className="mt-5 divide-y divide-slate-100">
@@ -1126,7 +1308,7 @@ export default function Home() {
                   </div>
                 ))
               ) : (
-                <EmptyState>No pages to show yet.</EmptyState>
+                <EmptyState>Aún no hay páginas para mostrar.</EmptyState>
               )}
             </div>
           </article>
@@ -1134,36 +1316,235 @@ export default function Home() {
 
         <section className="space-y-4">
           <div>
-            <h2 className="text-lg font-semibold text-slate-950">Sessions</h2>
-            <p className="mt-1 text-sm text-slate-500">Grouped activity by project and browser session</p>
+            <h2 className="text-lg font-semibold text-slate-950">Analítica de formularios</h2>
+            <p className="mt-1 text-sm text-slate-500">
+              Inicios, envíos y abandonos calculados sin capturar valores escritos
+            </p>
           </div>
 
-          <div className="grid gap-4 md:grid-cols-3">
+          <div className="grid gap-4 sm:grid-cols-2 xl:grid-cols-5">
             <MetricCard
-              label="Total Sessions"
-              value={sessionsSummary.total_sessions.toLocaleString()}
-              detail="All sessions visible to this token"
+              label="Formularios iniciados"
+              value={formAnalyticsSummary.total_form_starts.toLocaleString()}
+              detail={`${formAnalyticsSummary.total_forms.toLocaleString()} formularios detectados`}
               accent="sky"
             />
             <MetricCard
-              label="Average Events per Session"
-              value={sessionsSummary.average_events_per_session.toFixed(2)}
-              detail="Average tracked interactions"
+              label="Formularios enviados"
+              value={formAnalyticsSummary.total_form_submits.toLocaleString()}
+              detail="Envíos registrados correctamente"
               accent="emerald"
             />
             <MetricCard
-              label="Average Duration"
-              value={formatDuration(sessionsSummary.average_duration_seconds)}
-              detail="Approximate first-to-last event time"
+              label="Formularios abandonados"
+              value={formAnalyticsSummary.total_form_abandons.toLocaleString()}
+              detail="Sesiones que salieron sin enviar"
+              accent="amber"
+            />
+            <MetricCard
+              label="Tasa de envío"
+              value={`${formAnalyticsSummary.overall_submit_rate.toFixed(2)}%`}
+              detail="Envíos respecto a formularios iniciados"
+              accent="violet"
+            />
+            <MetricCard
+              label="Tasa de abandono"
+              value={`${formAnalyticsSummary.overall_abandon_rate.toFixed(2)}%`}
+              detail="Abandonos respecto a formularios iniciados"
               accent="amber"
             />
           </div>
 
           <article className="rounded-lg border border-slate-200 bg-white shadow-sm">
             <div className="border-b border-slate-200 p-4 sm:p-5">
-              <h3 className="text-base font-semibold">Recent Sessions</h3>
+              <h3 className="text-base font-semibold">Formularios con abandono</h3>
               <p className="mt-1 text-sm text-slate-500">
-                Latest {sessions.length} sessions visible to the current token
+                Rendimiento y último campo habitual antes de abandonar
+              </p>
+            </div>
+
+            <div className="overflow-x-auto">
+              {formAbandonment.length ? (
+                <table className="min-w-[1120px] w-full divide-y divide-slate-200 text-left text-sm">
+                  <thead className="bg-slate-50 text-xs uppercase tracking-wide text-slate-500">
+                    <tr>
+                      <th scope="col" className="px-4 py-3 font-semibold">Página</th>
+                      <th scope="col" className="px-4 py-3 font-semibold">Formulario</th>
+                      <th scope="col" className="px-4 py-3 text-right font-semibold">Inicios</th>
+                      <th scope="col" className="px-4 py-3 text-right font-semibold">Envíos</th>
+                      <th scope="col" className="px-4 py-3 text-right font-semibold">Abandonos</th>
+                      <th scope="col" className="px-4 py-3 text-right font-semibold">Tasa de abandono</th>
+                      <th scope="col" className="px-4 py-3 font-semibold">Último campo común</th>
+                      <th scope="col" className="px-4 py-3 text-right font-semibold">Campos tocados</th>
+                    </tr>
+                  </thead>
+                  <tbody className="divide-y divide-slate-100">
+                    {formAbandonment.map((form) => (
+                      <tr
+                        key={`${form.project_id}-${form.page_path}-${form.form_id || form.form_name || form.form_index}`}
+                        className="transition hover:bg-slate-50"
+                      >
+                        <td className="max-w-56 px-4 py-3">
+                          <p className="truncate font-medium text-slate-700" title={form.page_path}>
+                            {displayPage(form.page_path)}
+                          </p>
+                        </td>
+                        <td className="max-w-56 px-4 py-3">
+                          <p className="truncate font-mono text-xs text-slate-600" title={displayForm(form)}>
+                            {displayForm(form)}
+                          </p>
+                        </td>
+                        <td className="px-4 py-3 text-right font-semibold tabular-nums text-slate-700">
+                          {form.starts.toLocaleString()}
+                        </td>
+                        <td className="px-4 py-3 text-right tabular-nums text-slate-600">
+                          {form.submits.toLocaleString()}
+                        </td>
+                        <td className="px-4 py-3 text-right font-semibold tabular-nums text-rose-700">
+                          {form.abandons.toLocaleString()}
+                        </td>
+                        <td className="px-4 py-3 text-right font-semibold tabular-nums text-rose-700">
+                          {form.abandon_rate.toFixed(2)}%
+                        </td>
+                        <td className="max-w-56 px-4 py-3">
+                          <p className="truncate text-slate-600" title={form.most_common_last_field || "Sin datos"}>
+                            {form.most_common_last_field || "Sin datos"}
+                          </p>
+                        </td>
+                        <td className="px-4 py-3 text-right tabular-nums text-slate-600">
+                          {form.average_fields_touched_before_abandon.toFixed(2)}
+                        </td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              ) : (
+                <div className="p-5">
+                  <EmptyState>
+                    No hay abandonos de formularios en el alcance actual.
+                  </EmptyState>
+                </div>
+              )}
+            </div>
+          </article>
+
+          <article className="rounded-lg border border-slate-200 bg-white shadow-sm">
+            <div className="flex flex-col gap-2 border-b border-slate-200 p-4 sm:flex-row sm:items-end sm:justify-between sm:p-5">
+              <div>
+                <h3 className="text-base font-semibold">Interacción por campo</h3>
+                <p className="mt-1 text-sm text-slate-500">
+                  Foco, salida, tiempo promedio y abandonos por último campo
+                </p>
+              </div>
+              <p className="text-sm text-slate-500">
+                Campo más problemático:{" "}
+                <span className="font-semibold text-slate-800">
+                  {mostProblematicField
+                    ? displayFormField(mostProblematicField)
+                    : "Sin datos"}
+                </span>
+              </p>
+            </div>
+
+            <div className="overflow-x-auto">
+              {formFields.length ? (
+                <table className="min-w-[1040px] w-full divide-y divide-slate-200 text-left text-sm">
+                  <thead className="bg-slate-50 text-xs uppercase tracking-wide text-slate-500">
+                    <tr>
+                      <th scope="col" className="px-4 py-3 font-semibold">Página</th>
+                      <th scope="col" className="px-4 py-3 font-semibold">Formulario</th>
+                      <th scope="col" className="px-4 py-3 font-semibold">Campo</th>
+                      <th scope="col" className="px-4 py-3 font-semibold">Tipo</th>
+                      <th scope="col" className="px-4 py-3 text-right font-semibold">Focos</th>
+                      <th scope="col" className="px-4 py-3 text-right font-semibold">Salidas</th>
+                      <th scope="col" className="px-4 py-3 text-right font-semibold">Último antes de abandono</th>
+                      <th scope="col" className="px-4 py-3 text-right font-semibold">Tiempo promedio</th>
+                    </tr>
+                  </thead>
+                  <tbody className="divide-y divide-slate-100">
+                    {formFields.map((field) => (
+                      <tr
+                        key={`${field.project_id}-${field.page_path}-${field.form_id || field.form_name}-${field.field_id || field.field_name || field.field_index}`}
+                        className="transition hover:bg-slate-50"
+                      >
+                        <td className="max-w-52 px-4 py-3">
+                          <p className="truncate font-medium text-slate-700" title={field.page_path}>
+                            {displayPage(field.page_path)}
+                          </p>
+                        </td>
+                        <td className="max-w-52 px-4 py-3">
+                          <p
+                            className="truncate font-mono text-xs text-slate-500"
+                            title={displayForm({ ...field, form_index: null })}
+                          >
+                            {displayForm({ ...field, form_index: null })}
+                          </p>
+                        </td>
+                        <td className="max-w-56 px-4 py-3">
+                          <p className="truncate font-medium text-slate-700" title={displayFormField(field)}>
+                            {displayFormField(field)}
+                          </p>
+                        </td>
+                        <td className="px-4 py-3 text-slate-600">{field.field_type}</td>
+                        <td className="px-4 py-3 text-right tabular-nums text-slate-600">
+                          {field.focus_count.toLocaleString()}
+                        </td>
+                        <td className="px-4 py-3 text-right tabular-nums text-slate-600">
+                          {field.blur_count.toLocaleString()}
+                        </td>
+                        <td className="px-4 py-3 text-right font-semibold tabular-nums text-rose-700">
+                          {field.abandon_count_as_last_field.toLocaleString()}
+                        </td>
+                        <td className="px-4 py-3 text-right tabular-nums text-slate-600">
+                          {formatMilliseconds(field.average_time_on_field_ms)}
+                        </td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              ) : (
+                <div className="p-5">
+                  <EmptyState>
+                    No hay interacción de campos de formulario para mostrar.
+                  </EmptyState>
+                </div>
+              )}
+            </div>
+          </article>
+        </section>
+
+        <section className="space-y-4">
+          <div>
+            <h2 className="text-lg font-semibold text-slate-950">Sesiones</h2>
+            <p className="mt-1 text-sm text-slate-500">Actividad agrupada por proyecto y sesión del navegador</p>
+          </div>
+
+          <div className="grid gap-4 md:grid-cols-3">
+            <MetricCard
+              label="Sesiones totales"
+              value={sessionsSummary.total_sessions.toLocaleString()}
+              detail="Todas las sesiones visibles para este token"
+              accent="sky"
+            />
+            <MetricCard
+              label="Eventos promedio por sesión"
+              value={sessionsSummary.average_events_per_session.toFixed(2)}
+              detail="Promedio de interacciones registradas"
+              accent="emerald"
+            />
+            <MetricCard
+              label="Duración promedio"
+              value={formatDuration(sessionsSummary.average_duration_seconds)}
+              detail="Tiempo aproximado entre el primer y último evento"
+              accent="amber"
+            />
+          </div>
+
+          <article className="rounded-lg border border-slate-200 bg-white shadow-sm">
+            <div className="border-b border-slate-200 p-4 sm:p-5">
+              <h3 className="text-base font-semibold">Sesiones recientes</h3>
+              <p className="mt-1 text-sm text-slate-500">
+                Últimas {sessions.length} sesiones visibles para el token actual
               </p>
             </div>
 
@@ -1173,22 +1554,22 @@ export default function Home() {
                   <thead className="bg-slate-50 text-xs uppercase tracking-wide text-slate-500">
                     <tr>
                       <th scope="col" className="px-4 py-3 font-semibold">
-                        Session ID
+                        ID de sesión
                       </th>
                       <th scope="col" className="px-4 py-3 font-semibold">
-                        First Page
+                        Primera página
                       </th>
                       <th scope="col" className="px-4 py-3 font-semibold">
-                        Last Page
+                        Última página
                       </th>
                       <th scope="col" className="px-4 py-3 font-semibold">
-                        Events
+                        Eventos
                       </th>
                       <th scope="col" className="px-4 py-3 font-semibold">
-                        Duration
+                        Duración
                       </th>
                       <th scope="col" className="px-4 py-3 font-semibold">
-                        Last Event
+                        Último evento
                       </th>
                     </tr>
                   </thead>
@@ -1225,7 +1606,7 @@ export default function Home() {
                 </table>
               ) : (
                 <div className="p-5">
-                  <EmptyState>No sessions to show yet.</EmptyState>
+                  <EmptyState>Aún no hay sesiones para mostrar.</EmptyState>
                 </div>
               )}
             </div>
@@ -1234,43 +1615,43 @@ export default function Home() {
 
         <section className="space-y-4">
           <div>
-            <h2 className="text-lg font-semibold text-slate-950">UX Signals V1</h2>
+            <h2 className="text-lg font-semibold text-slate-950">Señales UX V1</h2>
             <p className="mt-1 text-sm text-slate-500">
-              Friction signals calculated from existing interaction events
+              Señales de fricción calculadas a partir de los eventos de interacción
             </p>
           </div>
 
           <div className="grid gap-4 sm:grid-cols-2 xl:grid-cols-4">
             <MetricCard
-              label="Total UX Signals"
+              label="Señales UX totales"
               value={uxSignalsSummary.total_signals.toLocaleString()}
-              detail="All detected friction signals"
+              detail="Todas las señales de fricción detectadas"
               accent="sky"
             />
             <MetricCard
-              label="Rage Clicks"
+              label="Clics de frustración"
               value={uxSignalsSummary.total_rage_clicks.toLocaleString()}
-              detail="Rapid repeated click groups"
+              detail="Grupos de clics rápidos y repetidos"
               accent="amber"
             />
             <MetricCard
-              label="Dead Clicks"
+              label="Clics sin respuesta"
               value={uxSignalsSummary.total_dead_clicks.toLocaleString()}
-              detail="Clicks without detected response"
+              detail="Clics sin una respuesta detectada"
               accent="violet"
             />
             <MetricCard
-              label="Top Dead Page"
+              label="Página con más clics sin respuesta"
               value={displayPage(topDeadPage?.[0])}
-              detail={topDeadPage ? `${topDeadPage[1]} detected signals` : "No dead clicks detected"}
+              detail={topDeadPage ? `${topDeadPage[1]} señales detectadas` : "No se detectaron clics sin respuesta"}
               accent="emerald"
             />
           </div>
 
           <div className="grid gap-4 xl:grid-cols-2">
             <article className="rounded-lg border border-slate-200 bg-white p-5 shadow-sm">
-              <h3 className="text-base font-semibold">Rage Clicks by Page</h3>
-              <p className="mt-1 text-sm text-slate-500">Pages ranked by detected rage click groups</p>
+              <h3 className="text-base font-semibold">Clics de frustración por página</h3>
+              <p className="mt-1 text-sm text-slate-500">Páginas ordenadas por grupos detectados</p>
 
               <div className="mt-5 divide-y divide-slate-100">
                 {rageClicksByPage.length ? (
@@ -1288,14 +1669,14 @@ export default function Home() {
                     </div>
                   ))
                 ) : (
-                  <EmptyState>No rage click pages detected.</EmptyState>
+                  <EmptyState>No se detectaron páginas con clics de frustración.</EmptyState>
                 )}
               </div>
             </article>
 
             <article className="rounded-lg border border-slate-200 bg-white p-5 shadow-sm">
-              <h3 className="text-base font-semibold">Rage Clicks by Element</h3>
-              <p className="mt-1 text-sm text-slate-500">Elements and coordinate zones causing friction</p>
+              <h3 className="text-base font-semibold">Clics de frustración por elemento</h3>
+              <p className="mt-1 text-sm text-slate-500">Elementos y zonas de coordenadas que generan fricción</p>
 
               <div className="mt-5 divide-y divide-slate-100">
                 {rageClicksByElement.length ? (
@@ -1316,7 +1697,7 @@ export default function Home() {
                     </div>
                   ))
                 ) : (
-                  <EmptyState>No rage click elements detected.</EmptyState>
+                  <EmptyState>No se detectaron elementos con clics de frustración.</EmptyState>
                 )}
               </div>
             </article>
@@ -1324,9 +1705,9 @@ export default function Home() {
 
           <div className="grid gap-4 xl:grid-cols-2">
             <article className="rounded-lg border border-slate-200 bg-white p-5 shadow-sm">
-              <h3 className="text-base font-semibold">Dead Clicks by Page</h3>
+              <h3 className="text-base font-semibold">Clics sin respuesta por página</h3>
               <p className="mt-1 text-sm text-slate-500">
-                Pages ranked by clicks without detected response
+                Páginas ordenadas por clics sin una respuesta detectada
               </p>
 
               <div className="mt-5 divide-y divide-slate-100">
@@ -1348,15 +1729,15 @@ export default function Home() {
                     </div>
                   ))
                 ) : (
-                  <EmptyState>No dead click pages detected.</EmptyState>
+                  <EmptyState>No se detectaron páginas con clics sin respuesta.</EmptyState>
                 )}
               </div>
             </article>
 
             <article className="rounded-lg border border-slate-200 bg-white p-5 shadow-sm">
-              <h3 className="text-base font-semibold">Dead Clicks by Element</h3>
+              <h3 className="text-base font-semibold">Clics sin respuesta por elemento</h3>
               <p className="mt-1 text-sm text-slate-500">
-                Elements and coordinate zones that may not respond
+                Elementos y zonas de coordenadas que podrían no responder
               </p>
 
               <div className="mt-5 divide-y divide-slate-100">
@@ -1378,7 +1759,7 @@ export default function Home() {
                     </div>
                   ))
                 ) : (
-                  <EmptyState>No dead click elements detected.</EmptyState>
+                  <EmptyState>No se detectaron elementos con clics sin respuesta.</EmptyState>
                 )}
               </div>
             </article>
@@ -1386,9 +1767,9 @@ export default function Home() {
 
           <article className="rounded-lg border border-slate-200 bg-white shadow-sm">
             <div className="border-b border-slate-200 p-4 sm:p-5">
-              <h3 className="text-base font-semibold">Detected Rage Clicks</h3>
+              <h3 className="text-base font-semibold">Clics de frustración detectados</h3>
               <p className="mt-1 text-sm text-slate-500">
-                Latest {rageClicks.length} signals visible to the current token
+                Últimas {rageClicks.length} señales visibles para el token actual
               </p>
             </div>
 
@@ -1398,22 +1779,22 @@ export default function Home() {
                   <thead className="bg-slate-50 text-xs uppercase tracking-wide text-slate-500">
                     <tr>
                       <th scope="col" className="px-4 py-3 font-semibold">
-                        Page Path
+                        Ruta de página
                       </th>
                       <th scope="col" className="px-4 py-3 font-semibold">
-                        Element
+                        Elemento
                       </th>
                       <th scope="col" className="px-4 py-3 font-semibold">
-                        Session ID
+                        ID de sesión
                       </th>
                       <th scope="col" className="px-4 py-3 text-right font-semibold">
-                        Clicks
+                        Clics
                       </th>
                       <th scope="col" className="px-4 py-3 font-semibold">
-                        Severity
+                        Severidad
                       </th>
                       <th scope="col" className="px-4 py-3 font-semibold">
-                        Time
+                        Hora
                       </th>
                     </tr>
                   </thead>
@@ -1443,12 +1824,12 @@ export default function Home() {
                         </td>
                         <td className="px-4 py-3">
                           <span className={`inline-flex rounded-full px-2.5 py-1 text-xs font-semibold capitalize ${severityClasses(signal.severity)}`}>
-                            {signal.severity}
+                            {displaySeverity(signal.severity)}
                           </span>
                         </td>
                         <td className="whitespace-nowrap px-4 py-3 text-slate-500">
                           <p>{formatDate(signal.last_click_at)}</p>
-                          <p className="mt-0.5 text-xs">{signal.duration_ms} ms burst</p>
+                          <p className="mt-0.5 text-xs">ráfaga de {signal.duration_ms} ms</p>
                         </td>
                       </tr>
                     ))}
@@ -1456,7 +1837,7 @@ export default function Home() {
                 </table>
               ) : (
                 <div className="p-5">
-                  <EmptyState>No rage clicks detected in the current analytics scope.</EmptyState>
+                  <EmptyState>No se detectaron clics de frustración en el alcance actual.</EmptyState>
                 </div>
               )}
             </div>
@@ -1464,9 +1845,9 @@ export default function Home() {
 
           <article className="rounded-lg border border-slate-200 bg-white shadow-sm">
             <div className="border-b border-slate-200 p-4 sm:p-5">
-              <h3 className="text-base font-semibold">Detected Dead Clicks</h3>
+              <h3 className="text-base font-semibold">Clics sin respuesta detectados</h3>
               <p className="mt-1 text-sm text-slate-500">
-                Latest {deadClicks.length} signals visible to the current token
+                Últimas {deadClicks.length} señales visibles para el token actual
               </p>
             </div>
 
@@ -1476,19 +1857,19 @@ export default function Home() {
                   <thead className="bg-slate-50 text-xs uppercase tracking-wide text-slate-500">
                     <tr>
                       <th scope="col" className="px-4 py-3 font-semibold">
-                        Page Path
+                        Ruta de página
                       </th>
                       <th scope="col" className="px-4 py-3 font-semibold">
-                        Element
+                        Elemento
                       </th>
                       <th scope="col" className="px-4 py-3 font-semibold">
-                        Session ID
+                        ID de sesión
                       </th>
                       <th scope="col" className="px-4 py-3 font-semibold">
-                        Severity
+                        Severidad
                       </th>
                       <th scope="col" className="px-4 py-3 font-semibold">
-                        Clicked At
+                        Fecha del clic
                       </th>
                     </tr>
                   </thead>
@@ -1526,7 +1907,7 @@ export default function Home() {
                           <span
                             className={`inline-flex rounded-full px-2.5 py-1 text-xs font-semibold capitalize ${severityClasses(signal.severity)}`}
                           >
-                            {signal.severity}
+                            {displaySeverity(signal.severity)}
                           </span>
                         </td>
                         <td className="whitespace-nowrap px-4 py-3 text-slate-500">
@@ -1538,7 +1919,7 @@ export default function Home() {
                 </table>
               ) : (
                 <div className="p-5">
-                  <EmptyState>No dead clicks detected in the current analytics scope.</EmptyState>
+                  <EmptyState>No se detectaron clics sin respuesta en el alcance actual.</EmptyState>
                 </div>
               )}
             </div>
@@ -1548,16 +1929,16 @@ export default function Home() {
         <section className="space-y-4">
           <div className="flex flex-col gap-3 xl:flex-row xl:items-end xl:justify-between">
             <div>
-              <h2 className="text-lg font-semibold text-slate-950">Click Heatmap V3</h2>
+              <h2 className="text-lg font-semibold text-slate-950">Mapa de clics V3</h2>
               <p className="mt-1 text-sm text-slate-500">
-                Viewport and full-page click density with scroll-aware positioning
+                Densidad de clics por viewport y página completa según el desplazamiento
               </p>
             </div>
 
             <div className="grid w-full gap-3 sm:grid-cols-3 xl:w-auto">
               <label className="w-full xl:w-72">
                 <span className="mb-1.5 block text-xs font-semibold uppercase tracking-wide text-slate-500">
-                  Page
+                  Página
                 </span>
                 <select
                   value={activeHeatmapPage}
@@ -1572,14 +1953,14 @@ export default function Home() {
                       </option>
                     ))
                   ) : (
-                    <option value="">No click pages</option>
+                    <option value="">No hay páginas con clics</option>
                   )}
                 </select>
               </label>
 
               <label className="w-full xl:w-52">
                 <span className="mb-1.5 block text-xs font-semibold uppercase tracking-wide text-slate-500">
-                  Viewport segment
+                  Segmento de pantalla
                 </span>
                 <select
                   value={heatmapSegment}
@@ -1588,17 +1969,17 @@ export default function Home() {
                   }
                   className="h-10 w-full rounded-lg border border-slate-300 bg-white px-3 text-sm text-slate-700 outline-none transition focus:border-sky-500 focus:ring-2 focus:ring-sky-100"
                 >
-                  <option value="all">All</option>
-                  <option value="desktop">Desktop</option>
+                  <option value="all">Todos</option>
+                  <option value="desktop">Escritorio</option>
                   <option value="tablet">Tablet</option>
-                  <option value="mobile">Mobile</option>
-                  <option value="unknown">Unknown</option>
+                  <option value="mobile">Móvil</option>
+                  <option value="unknown">Desconocido</option>
                 </select>
               </label>
 
               <div className="w-full xl:w-56">
                 <span className="mb-1.5 block text-xs font-semibold uppercase tracking-wide text-slate-500">
-                  Heatmap mode
+                  Modo del mapa
                 </span>
                 <div className="grid h-10 grid-cols-2 rounded-lg border border-slate-300 bg-white p-1">
                   <button
@@ -1623,7 +2004,7 @@ export default function Home() {
                         : "text-slate-600 hover:bg-slate-100"
                     }`}
                   >
-                    Full page
+                    Página completa
                   </button>
                 </div>
               </div>
@@ -1632,44 +2013,44 @@ export default function Home() {
 
           <div className="grid gap-4 sm:grid-cols-2 xl:grid-cols-4">
             <MetricCard
-              label="Filtered Clicks"
+              label="Clics filtrados"
               value={heatmapView.total_clicks.toLocaleString()}
-              detail={`${displayPage(activeHeatmapPage)} / ${heatmapSegment === "all" ? "All viewports" : displayViewportSegment(heatmapSegment)}`}
+              detail={`${displayPage(activeHeatmapPage)} / ${heatmapSegment === "all" ? "Todos los viewports" : displayViewportSegment(heatmapSegment)}`}
               accent="sky"
             />
             <MetricCard
-              label="Click Pages"
+              label="Páginas con clics"
               value={heatmapPages.length.toLocaleString()}
-              detail={`${clickHeatmap.total_clicks.toLocaleString()} clicks across all pages`}
+              detail={`${clickHeatmap.total_clicks.toLocaleString()} clics en todas las páginas`}
               accent="emerald"
             />
             <MetricCard
-              label="Top Element"
+              label="Elemento principal"
               value={
                 topHeatmapElement
                   ? displayElementRanking(topHeatmapElement[0])
-                  : "No element"
+                  : "Sin elemento"
               }
               detail={
                 topHeatmapElement
-                  ? `${topHeatmapElement[1].toLocaleString()} filtered clicks`
-                  : "No element data"
+                  ? `${topHeatmapElement[1].toLocaleString()} clics filtrados`
+                  : "No hay datos de elementos"
               }
               accent="amber"
             />
             <MetricCard
-              label="Primary Segment"
+              label="Segmento principal"
               value={
                 primaryHeatmapSegment
                   ? displayViewportSegment(
                       primaryHeatmapSegment[0] as ViewportSegment,
                     )
-                  : "No segment"
+                  : "Sin segmento"
               }
               detail={
                 primaryHeatmapSegment
-                  ? `${primaryHeatmapSegment[1].toLocaleString()} filtered clicks`
-                  : "No viewport data"
+                  ? `${primaryHeatmapSegment[1].toLocaleString()} clics filtrados`
+                  : "No hay datos de viewport"
               }
               accent="violet"
             />
@@ -1678,34 +2059,34 @@ export default function Home() {
           {heatmapMode === "full_page" ? (
             <div className="grid gap-4 sm:grid-cols-2 xl:grid-cols-4">
               <MetricCard
-                label="Median Document Height"
-                value={documentHeight !== null ? `${Math.round(documentHeight).toLocaleString()} px` : "Unknown"}
-                detail={`${heatmapView.document_height_summary.count.toLocaleString()} clicks with document height`}
+                label="Altura mediana del documento"
+                value={documentHeight !== null ? `${Math.round(documentHeight).toLocaleString()} px` : "Desconocida"}
+                detail={`${heatmapView.document_height_summary.count.toLocaleString()} clics con altura del documento`}
                 accent="sky"
               />
               <MetricCard
-                label="Above the Fold"
+                label="Sobre el primer pliegue"
                 value={aboveFoldClicks.toLocaleString()}
-                detail="Clicks inside the first viewport"
+                detail="Clics dentro del primer viewport"
                 accent="emerald"
               />
               <MetricCard
-                label="Below the Fold"
+                label="Bajo el primer pliegue"
                 value={belowFoldClicks.toLocaleString()}
-                detail="Clicks after the first viewport"
+                detail="Clics después del primer viewport"
                 accent="amber"
               />
               <MetricCard
-                label="Hottest Page Zone"
+                label="Zona más activa"
                 value={
                   hottestDocumentZone
                     ? `C${hottestDocumentZone.column + 1} / R${hottestDocumentZone.row + 1}`
-                    : "No zone"
+                    : "Sin zona"
                 }
                 detail={
                   hottestDocumentZone
-                    ? `${hottestDocumentZone.count.toLocaleString()} clicks`
-                    : "No normalized document points"
+                    ? `${hottestDocumentZone.count.toLocaleString()} clics`
+                    : "No hay puntos normalizados"
                 }
                 accent="violet"
               />
@@ -1726,8 +2107,8 @@ export default function Home() {
 
           <div className="grid gap-4 xl:grid-cols-3">
             <article className="rounded-lg border border-slate-200 bg-white p-5 shadow-sm">
-              <h3 className="text-base font-semibold">Clicks by Page</h3>
-              <p className="mt-1 text-sm text-slate-500">Pages ranked by valid click coordinates</p>
+              <h3 className="text-base font-semibold">Clics por página</h3>
+              <p className="mt-1 text-sm text-slate-500">Páginas ordenadas por coordenadas de clic válidas</p>
 
               <div className="mt-5 divide-y divide-slate-100">
                 {heatmapPages.length ? (
@@ -1748,14 +2129,14 @@ export default function Home() {
                     </div>
                   ))
                 ) : (
-                  <EmptyState>No pages with heatmap clicks.</EmptyState>
+                  <EmptyState>No hay páginas con clics para el mapa.</EmptyState>
                 )}
               </div>
             </article>
 
             <article className="rounded-lg border border-slate-200 bg-white p-5 shadow-sm">
-              <h3 className="text-base font-semibold">Clicks by Element</h3>
-              <p className="mt-1 text-sm text-slate-500">Elements ranked by valid click coordinates</p>
+              <h3 className="text-base font-semibold">Clics por elemento</h3>
+              <p className="mt-1 text-sm text-slate-500">Elementos ordenados por coordenadas de clic válidas</p>
 
               <div className="mt-5 divide-y divide-slate-100">
                 {heatmapElements.length ? (
@@ -1776,15 +2157,15 @@ export default function Home() {
                     </div>
                   ))
                 ) : (
-                  <EmptyState>No elements with heatmap clicks.</EmptyState>
+                  <EmptyState>No hay elementos con clics para el mapa.</EmptyState>
                 )}
               </div>
             </article>
 
             <article className="rounded-lg border border-slate-200 bg-white p-5 shadow-sm">
-              <h3 className="text-base font-semibold">Clicks by Viewport</h3>
+              <h3 className="text-base font-semibold">Clics por viewport</h3>
               <p className="mt-1 text-sm text-slate-500">
-                Device-width segments across all click pages
+                Segmentos por ancho de dispositivo en todas las páginas
               </p>
 
               <div className="mt-5 divide-y divide-slate-100">
@@ -1811,15 +2192,15 @@ export default function Home() {
           <article className="rounded-lg border border-slate-200 bg-white shadow-sm">
             <div className="flex flex-col gap-1 border-b border-slate-200 p-4 sm:flex-row sm:items-end sm:justify-between sm:p-5">
               <div>
-                <h3 className="text-base font-semibold">Heatmap Preview</h3>
+                <h3 className="text-base font-semibold">Vista previa del mapa</h3>
                 <p className="mt-1 truncate text-sm text-slate-500" title={displayPage(activeHeatmapPage)}>
                   {displayPage(activeHeatmapPage)}
                 </p>
               </div>
               <p className="text-sm font-semibold tabular-nums text-slate-600">
                 {isHeatmapLoading
-                  ? "Updating..."
-                  : `${heatmapView.total_clicks.toLocaleString()} clicks`}
+                  ? "Actualizando..."
+                  : `${heatmapView.total_clicks.toLocaleString()} clics`}
               </p>
             </div>
 
@@ -1852,7 +2233,7 @@ export default function Home() {
                           height: `${100 / 8}%`,
                           opacity: 0.08 + zone.intensity * 0.42,
                         }}
-                        title={`Zone ${zone.column + 1}, ${zone.row + 1}: ${zone.count} clicks`}
+                        title={`Zona ${zone.column + 1}, ${zone.row + 1}: ${zone.count} clics`}
                       />
                     ))}
                     {heatmapPreviewPoints.map((point) => (
@@ -1863,12 +2244,12 @@ export default function Home() {
                           left: `${point.x_percent}%`,
                           top: `${point.y_percent}%`,
                         }}
-                        title={`${displayElementRanking(point.element_id || "coordinate_zone")} at ${point.x_percent}%, ${point.y_percent}%`}
+                        title={`${displayElementRanking(point.element_id || "coordinate_zone")} en ${point.x_percent}%, ${point.y_percent}%`}
                       />
                     ))}
                     {!heatmapPreviewPoints.length ? (
                       <div className="absolute inset-0 flex items-center justify-center px-4 text-center text-sm font-medium text-slate-500">
-                        Clicks in this segment do not have a complete viewport.
+                        Los clics de este segmento no tienen un viewport completo.
                       </div>
                     ) : null}
                   </div>
@@ -1889,7 +2270,7 @@ export default function Home() {
                           style={{ top: `${position}%` }}
                         >
                           <span className="absolute right-2 -translate-y-full pb-1 text-[10px] font-semibold text-slate-400">
-                            {position}% depth
+                            {position}% de profundidad
                           </span>
                         </div>
                       ))}
@@ -1904,7 +2285,7 @@ export default function Home() {
                             height: `${100 / 24}%`,
                             opacity: 0.07 + zone.intensity * 0.43,
                           }}
-                          title={`Document zone ${zone.column + 1}, ${zone.row + 1}: ${zone.count} clicks`}
+                          title={`Zona del documento ${zone.column + 1}, ${zone.row + 1}: ${zone.count} clics`}
                         />
                       ))}
                       {foldPositionPercent !== null ? (
@@ -1913,7 +2294,7 @@ export default function Home() {
                           style={{ top: `${foldPositionPercent}%` }}
                         >
                           <span className="absolute left-2 top-1 rounded bg-sky-600 px-2 py-1 text-[10px] font-semibold uppercase text-white">
-                            First viewport fold
+                            Primer pliegue del viewport
                           </span>
                         </div>
                       ) : null}
@@ -1925,19 +2306,19 @@ export default function Home() {
                             left: `${point.normalized_x * 100}%`,
                             top: `${point.normalized_document_y * 100}%`,
                           }}
-                          title={`${displayElementRanking(point.element_id || "coordinate_zone")} at ${Math.round(point.normalized_document_y * 100)}% document depth`}
+                          title={`${displayElementRanking(point.element_id || "coordinate_zone")} al ${Math.round(point.normalized_document_y * 100)}% de profundidad`}
                         />
                       ))}
                       {!documentPreviewPoints.length ? (
                         <div className="absolute inset-0 flex items-center justify-center px-4 text-center text-sm font-medium text-slate-500">
-                          Clicks in this segment do not have enough geometry for full-page positioning.
+                          Los clics de este segmento no tienen geometría suficiente para ubicarlos en la página completa.
                         </div>
                       ) : null}
                     </div>
                   </div>
                 )
               ) : (
-                <EmptyState>No click points available for this page.</EmptyState>
+                <EmptyState>No hay puntos de clic disponibles para esta página.</EmptyState>
               )}
             </div>
           </article>
@@ -1946,13 +2327,13 @@ export default function Home() {
             <article className="rounded-lg border border-slate-200 bg-white p-5 shadow-sm">
               <div className="flex flex-col gap-1 sm:flex-row sm:items-end sm:justify-between">
                 <div>
-                  <h3 className="text-base font-semibold">Clicks by Scroll Depth</h3>
+                  <h3 className="text-base font-semibold">Clics por profundidad de desplazamiento</h3>
                   <p className="mt-1 text-sm text-slate-500">
-                    Distribution across the normalized full document height
+                    Distribución sobre la altura normalizada del documento completo
                   </p>
                 </div>
                 <p className="text-xs font-semibold uppercase text-slate-400">
-                  12 x 24 document grid
+                  Cuadrícula del documento 12 x 24
                 </p>
               </div>
 
@@ -1984,9 +2365,9 @@ export default function Home() {
 
           <article className="rounded-lg border border-slate-200 bg-white shadow-sm">
             <div className="border-b border-slate-200 p-4 sm:p-5">
-              <h3 className="text-base font-semibold">Recent Heatmap Points</h3>
+              <h3 className="text-base font-semibold">Puntos recientes del mapa</h3>
               <p className="mt-1 text-sm text-slate-500">
-                Latest {heatmapView.points.length} points matching the page and viewport filters
+                Últimos {heatmapView.points.length} puntos que coinciden con los filtros
               </p>
             </div>
 
@@ -1995,13 +2376,13 @@ export default function Home() {
                 <table className="min-w-[980px] w-full divide-y divide-slate-200 text-left text-sm">
                   <thead className="bg-slate-50 text-xs uppercase tracking-wide text-slate-500">
                     <tr>
-                      <th scope="col" className="px-4 py-3 font-semibold">Page Path</th>
-                      <th scope="col" className="px-4 py-3 font-semibold">Element</th>
-                      <th scope="col" className="px-4 py-3 text-right font-semibold">Coordinates</th>
+                      <th scope="col" className="px-4 py-3 font-semibold">Ruta de página</th>
+                      <th scope="col" className="px-4 py-3 font-semibold">Elemento</th>
+                      <th scope="col" className="px-4 py-3 text-right font-semibold">Coordenadas</th>
                       <th scope="col" className="px-4 py-3 text-right font-semibold">Viewport</th>
-                      <th scope="col" className="px-4 py-3 font-semibold">Segment</th>
-                      <th scope="col" className="px-4 py-3 font-semibold">Session ID</th>
-                      <th scope="col" className="px-4 py-3 font-semibold">Occurred At</th>
+                      <th scope="col" className="px-4 py-3 font-semibold">Segmento</th>
+                      <th scope="col" className="px-4 py-3 font-semibold">ID de sesión</th>
+                      <th scope="col" className="px-4 py-3 font-semibold">Ocurrió el</th>
                     </tr>
                   </thead>
                   <tbody className="divide-y divide-slate-100">
@@ -2029,7 +2410,7 @@ export default function Home() {
                         <td className="whitespace-nowrap px-4 py-3 text-right font-mono text-xs text-slate-500">
                           {point.viewport_width && point.viewport_height
                             ? `${point.viewport_width} x ${point.viewport_height}`
-                            : "Unknown"}
+                            : "Desconocido"}
                         </td>
                         <td className="px-4 py-3 text-slate-600">
                           {displayViewportSegment(point.viewport_segment)}
@@ -2051,7 +2432,7 @@ export default function Home() {
                 </table>
               ) : (
                 <div className="p-5">
-                  <EmptyState>No valid click coordinates in the current analytics scope.</EmptyState>
+                  <EmptyState>No hay coordenadas de clic válidas en el alcance actual.</EmptyState>
                 </div>
               )}
             </div>
@@ -2061,9 +2442,9 @@ export default function Home() {
         <section className="space-y-4">
           <div className="flex flex-col gap-3 sm:flex-row sm:items-end sm:justify-between">
             <div>
-              <h2 className="text-lg font-semibold text-slate-950">Funnels V1</h2>
+              <h2 className="text-lg font-semibold text-slate-950">Embudos V1</h2>
               <p className="mt-1 text-sm text-slate-500">
-                Ordered conversion across sessions using existing events
+                Conversión ordenada entre sesiones usando los eventos existentes
               </p>
             </div>
             <button
@@ -2072,7 +2453,7 @@ export default function Home() {
               disabled={!savedToken || isAnalyzingFunnel}
               className="h-10 self-start rounded-lg bg-sky-600 px-4 text-sm font-semibold text-white transition hover:bg-sky-700 disabled:cursor-not-allowed disabled:opacity-50 sm:self-auto"
             >
-              {isAnalyzingFunnel ? "Analyzing..." : "Analyze funnel"}
+              {isAnalyzingFunnel ? "Analizando..." : "Analizar embudo"}
             </button>
           </div>
 
@@ -2088,7 +2469,7 @@ export default function Home() {
                   </span>
                   <div className="min-w-0">
                     <p className="text-xs font-semibold uppercase tracking-wide text-slate-500">
-                      Step {index + 1}
+                      Paso {index + 1}
                     </p>
                     <p className="truncate text-sm font-semibold text-slate-800" title={describeFunnelStep(step)}>
                       {describeFunnelStep(step)}
@@ -2111,21 +2492,21 @@ export default function Home() {
           <article className="overflow-hidden rounded-lg border border-slate-200 bg-white shadow-sm">
             <div className="grid divide-y divide-slate-200 border-b border-slate-200 sm:grid-cols-3 sm:divide-x sm:divide-y-0">
               <div className="p-4 sm:p-5">
-                <p className="text-xs font-semibold uppercase tracking-wide text-slate-500">Total Sessions</p>
+                <p className="text-xs font-semibold uppercase tracking-wide text-slate-500">Sesiones totales</p>
                 <p className="mt-2 text-2xl font-semibold tabular-nums text-slate-950">
                   {funnelResult ? funnelResult.total_sessions.toLocaleString() : "--"}
                 </p>
               </div>
               <div className="p-4 sm:p-5">
                 <p className="text-xs font-semibold uppercase tracking-wide text-slate-500">
-                  Overall Conversion
+                  Conversión total
                 </p>
                 <p className="mt-2 text-2xl font-semibold tabular-nums text-emerald-700">
                   {funnelResult ? `${funnelResult.overall_conversion_rate.toFixed(2)}%` : "--"}
                 </p>
               </div>
               <div className="p-4 sm:p-5">
-                <p className="text-xs font-semibold uppercase tracking-wide text-slate-500">Overall Dropoff</p>
+                <p className="text-xs font-semibold uppercase tracking-wide text-slate-500">Abandono total</p>
                 <p className="mt-2 text-2xl font-semibold tabular-nums text-rose-700">
                   {funnelResult ? `${funnelResult.overall_dropoff_rate.toFixed(2)}%` : "--"}
                 </p>
@@ -2138,22 +2519,22 @@ export default function Home() {
                   <thead className="bg-slate-50 text-xs uppercase tracking-wide text-slate-500">
                     <tr>
                       <th scope="col" className="px-4 py-3 font-semibold">
-                        Step
+                        Paso
                       </th>
                       <th scope="col" className="px-4 py-3 font-semibold">
-                        Condition
+                        Condición
                       </th>
                       <th scope="col" className="px-4 py-3 text-right font-semibold">
-                        Sessions
+                        Sesiones
                       </th>
                       <th scope="col" className="px-4 py-3 text-right font-semibold">
-                        From Previous
+                        Desde el anterior
                       </th>
                       <th scope="col" className="px-4 py-3 text-right font-semibold">
-                        From Start
+                        Desde el inicio
                       </th>
                       <th scope="col" className="px-4 py-3 text-right font-semibold">
-                        Dropoff
+                        Abandono
                       </th>
                     </tr>
                   </thead>
@@ -2190,7 +2571,7 @@ export default function Home() {
               </div>
             ) : (
               <div className="px-5 py-8 text-center text-sm text-slate-500">
-                Analyze the predefined funnel to calculate conversion from your current analytics scope.
+                Analiza el embudo predefinido para calcular la conversión del alcance actual.
               </div>
             )}
           </article>
@@ -2200,9 +2581,9 @@ export default function Home() {
           <div className="border-b border-slate-200 p-4 sm:p-5">
             <div className="flex flex-col gap-2 sm:flex-row sm:items-end sm:justify-between">
               <div>
-                <h2 className="text-base font-semibold">Recent Events</h2>
+                <h2 className="text-base font-semibold">Eventos recientes</h2>
                 <p className="mt-1 text-sm text-slate-500">
-                  Showing {filteredEvents.length} of {events.length} loaded events
+                  Mostrando {filteredEvents.length} de {events.length} eventos cargados
                 </p>
               </div>
               <button
@@ -2211,21 +2592,21 @@ export default function Home() {
                 disabled={!filtersActive}
                 className="h-9 self-start rounded-lg border border-slate-300 bg-white px-3 text-sm font-semibold text-slate-700 transition hover:bg-slate-50 disabled:cursor-not-allowed disabled:opacity-50 sm:self-auto"
               >
-                Clear filters
+                Limpiar filtros
               </button>
             </div>
 
             <div className="mt-4 grid gap-3 md:grid-cols-3">
               <label className="block">
                 <span className="mb-1.5 block text-xs font-semibold uppercase tracking-wide text-slate-500">
-                  Event type
+                  Tipo de evento
                 </span>
                 <select
                   value={eventTypeFilter}
                   onChange={(event) => setEventTypeFilter(event.target.value)}
                   className="h-10 w-full rounded-lg border border-slate-300 bg-white px-3 text-sm text-slate-700 outline-none transition focus:border-sky-500 focus:ring-2 focus:ring-sky-100"
                 >
-                  <option value="">All event types</option>
+                  <option value="">Todos los tipos de evento</option>
                   {eventTypeOptions.map((eventType) => (
                     <option key={eventType} value={eventType}>
                       {eventType}
@@ -2236,14 +2617,14 @@ export default function Home() {
 
               <label className="block">
                 <span className="mb-1.5 block text-xs font-semibold uppercase tracking-wide text-slate-500">
-                  Page path
+                  Ruta de página
                 </span>
                 <select
                   value={pagePathFilter}
                   onChange={(event) => setPagePathFilter(event.target.value)}
                   className="h-10 w-full rounded-lg border border-slate-300 bg-white px-3 text-sm text-slate-700 outline-none transition focus:border-sky-500 focus:ring-2 focus:ring-sky-100"
                 >
-                  <option value="">All pages</option>
+                  <option value="">Todas las páginas</option>
                   {pagePathOptions.map((pagePath) => (
                     <option key={pagePath} value={pagePath}>
                       {pagePath}
@@ -2254,13 +2635,13 @@ export default function Home() {
 
               <label className="block">
                 <span className="mb-1.5 block text-xs font-semibold uppercase tracking-wide text-slate-500">
-                  Search
+                  Buscar
                 </span>
                 <input
                   type="search"
                   value={searchQuery}
                   onChange={(event) => setSearchQuery(event.target.value)}
-                  placeholder="Type, page, element, session..."
+                  placeholder="Tipo, página, elemento, sesión..."
                   className="h-10 w-full rounded-lg border border-slate-300 bg-white px-3 text-sm text-slate-700 outline-none transition placeholder:text-slate-400 focus:border-sky-500 focus:ring-2 focus:ring-sky-100"
                 />
               </label>
@@ -2273,26 +2654,26 @@ export default function Home() {
                 <thead className="bg-slate-50 text-xs uppercase tracking-wide text-slate-500">
                   <tr>
                     <th scope="col" className="px-4 py-3 font-semibold">
-                      Event Type
+                      Tipo de evento
                     </th>
                     <th scope="col" className="px-4 py-3 font-semibold">
-                      Page Path
+                      Ruta de página
                     </th>
                     <th scope="col" className="px-4 py-3 font-semibold">
-                      Element
+                      Elemento
                     </th>
                     <th scope="col" className="px-4 py-3 font-semibold">
-                      Session ID
+                      ID de sesión
                     </th>
                     <th scope="col" className="px-4 py-3 font-semibold">
-                      Created At
+                      Creado el
                     </th>
                   </tr>
                 </thead>
                 <tbody className="divide-y divide-slate-100">
                   {filteredEvents.map((event) => {
                     const page = displayPage(event.page_path || event.page_url);
-                    const element = event.element_text || event.element_id || "No element";
+                    const element = event.element_text || event.element_id || "Sin elemento";
 
                     return (
                       <tr key={event.event_id} className="transition hover:bg-slate-50">
@@ -2328,8 +2709,8 @@ export default function Home() {
               <div className="p-5">
                 <EmptyState>
                   {events.length && filtersActive
-                    ? "No recent events match the current filters."
-                    : "No recent events to show yet."}
+                    ? "Ningún evento reciente coincide con los filtros actuales."
+                    : "Aún no hay eventos recientes para mostrar."}
                 </EmptyState>
               </div>
             )}
