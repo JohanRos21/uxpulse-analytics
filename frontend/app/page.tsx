@@ -1,9 +1,19 @@
 "use client";
 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import {
+  CommandMetric,
+  ContextDrawer,
+  DashboardPanel,
+  type DashboardZone,
+  SidebarNavigation,
+  type ZoneItem,
+  ZoneHeading,
+} from "./components/dashboard-ui";
 
 const API_BASE_URL = "http://127.0.0.1:8002";
 const TOKEN_STORAGE_KEY = "uxpulse_dashboard_token";
+const SIDEBAR_STORAGE_KEY = "uxpulse_sidebar_collapsed";
 
 type HealthState = "checking" | "online" | "offline";
 
@@ -523,6 +533,53 @@ function displayIssueType(value: string | null): string {
   return labels[value] ?? value.replace(/_/g, " ");
 }
 
+function issueTypeClasses(value: string): string {
+  const styles: Record<string, string> = {
+    dead_click_issue: "bg-rose-50 text-rose-700",
+    rage_click_issue: "bg-orange-50 text-orange-700",
+    funnel_dropoff_issue: "bg-emerald-50 text-emerald-700",
+    form_abandonment_issue: "bg-amber-50 text-amber-700",
+    field_friction_issue: "bg-yellow-50 text-yellow-800",
+    scroll_depth_issue: "bg-fuchsia-50 text-fuchsia-700",
+    device_segment_issue: "bg-cyan-50 text-cyan-700",
+  };
+
+  return styles[value] ?? "bg-indigo-50 text-indigo-700";
+}
+
+function issueTypeMarker(value: string): string {
+  const markers: Record<string, string> = {
+    dead_click_issue: "DC",
+    rage_click_issue: "RC",
+    funnel_dropoff_issue: "FN",
+    form_abandonment_issue: "FA",
+    field_friction_issue: "FF",
+    scroll_depth_issue: "SD",
+    device_segment_issue: "DV",
+  };
+
+  return markers[value] ?? "UX";
+}
+
+function describeHealthScore(score: number): {
+  label: string;
+  classes: string;
+} {
+  if (score < 40) {
+    return { label: "Crítico", classes: "text-rose-700" };
+  }
+
+  if (score < 60) {
+    return { label: "En riesgo", classes: "text-orange-700" };
+  }
+
+  if (score < 80) {
+    return { label: "Aceptable", classes: "text-amber-700" };
+  }
+
+  return { label: "Saludable", classes: "text-emerald-700" };
+}
+
 function describeFunnelStep(
   step: Pick<FunnelStepInput, "event_type"> & {
     page_path?: string | null;
@@ -719,6 +776,12 @@ export default function Home() {
   const [eventTypeFilter, setEventTypeFilter] = useState("");
   const [pagePathFilter, setPagePathFilter] = useState("");
   const [searchQuery, setSearchQuery] = useState("");
+  const [activeZone, setActiveZone] = useState<DashboardZone>("overview");
+  const [isTokenPanelOpen, setIsTokenPanelOpen] = useState(false);
+  const [visibleIntelligenceCount, setVisibleIntelligenceCount] = useState(10);
+  const [sidebarCollapsed, setSidebarCollapsed] = useState(false);
+  const [mobileSidebarOpen, setMobileSidebarOpen] = useState(false);
+  const [selectedInsight, setSelectedInsight] = useState<UXIntelligenceInsight | null>(null);
 
   const eventsByType = useMemo(() => sortCounts(summary.events_by_type), [summary.events_by_type]);
   const topPages = useMemo(() => sortCounts(summary.top_pages), [summary.top_pages]);
@@ -769,6 +832,70 @@ export default function Home() {
   );
   const lowDataNotice = intelligenceRecommendations.find(
     (recommendation) => recommendation.type === "low_data_notice",
+  );
+  const actionableIntelligence = useMemo(
+    () =>
+      intelligenceRecommendations.filter(
+        (recommendation) => recommendation.type !== "low_data_notice",
+      ),
+    [intelligenceRecommendations],
+  );
+  const healthStatus = describeHealthScore(
+    intelligenceSummary.overall_health_score,
+  );
+  const topPriorities = useMemo(() => {
+    const severityWeight: Record<IntelligenceSeverity, number> = {
+      high: 3,
+      medium: 2,
+      low: 1,
+    };
+    const ranked = [...actionableIntelligence].sort(
+      (first, second) =>
+        severityWeight[second.severity] - severityWeight[first.severity]
+        || second.confidence - first.confidence,
+    );
+    const selected: UXIntelligenceInsight[] = [];
+    const selectedIds = new Set<string>();
+    const selectedTypes = new Set<string>();
+
+    for (const recommendation of ranked) {
+      if (!selectedTypes.has(recommendation.type)) {
+        selected.push(recommendation);
+        selectedIds.add(recommendation.id);
+        selectedTypes.add(recommendation.type);
+      }
+
+      if (selected.length === 3) {
+        return selected;
+      }
+    }
+
+    for (const recommendation of ranked) {
+      if (!selectedIds.has(recommendation.id)) {
+        selected.push(recommendation);
+      }
+
+      if (selected.length === 3) {
+        break;
+      }
+    }
+
+    return selected;
+  }, [actionableIntelligence]);
+  const intelligenceTypeCounts = useMemo(
+    () =>
+      actionableIntelligence.reduce<Record<string, number>>(
+        (counts, recommendation) => {
+          counts[recommendation.type] = (counts[recommendation.type] ?? 0) + 1;
+          return counts;
+        },
+        {},
+      ),
+    [actionableIntelligence],
+  );
+  const visibleIntelligenceRecommendations = filteredIntelligenceRecommendations.slice(
+    0,
+    visibleIntelligenceCount,
   );
   const heatmapPages = useMemo(
     () => sortCounts(clickHeatmap.pages),
@@ -906,8 +1033,81 @@ export default function Home() {
       return matchesType && matchesPage && matchesSearch;
     });
   }, [eventTypeFilter, events, pagePathFilter, searchQuery]);
+  const visibleFilteredEvents = filteredEvents.slice(0, 10);
+  const visibleSessions = sessions.slice(0, 10);
 
   const filtersActive = Boolean(eventTypeFilter || pagePathFilter || searchQuery.trim());
+  const zoneItems = useMemo<ZoneItem[]>(
+    () => [
+      {
+        id: "overview",
+        label: "Resumen",
+        marker: "⌂",
+        metric: `${intelligenceSummary.overall_health_score}`,
+        subtitle: "Health score",
+        tone: "blue",
+      },
+      {
+        id: "behavior",
+        label: "Comportamiento",
+        marker: "↗",
+        metric: summary.total_events.toLocaleString(),
+        subtitle: "Eventos",
+        tone: "cyan",
+      },
+      {
+        id: "conversion",
+        label: "Conversión",
+        marker: "⇢",
+        metric: funnelResult
+          ? `${funnelResult.overall_conversion_rate.toFixed(0)}%`
+          : "--",
+        subtitle: "Funnel principal",
+        tone: "green",
+      },
+      {
+        id: "friction",
+        label: "Fricción UX",
+        marker: "!",
+        metric: uxSignalsSummary.total_signals.toLocaleString(),
+        subtitle: "Señales detectadas",
+        tone: "orange",
+      },
+      {
+        id: "heatmaps",
+        label: "Heatmaps",
+        marker: "⊙",
+        metric: clickHeatmap.total_clicks.toLocaleString(),
+        subtitle: "Clics mapeados",
+        tone: "pink",
+      },
+      {
+        id: "forms",
+        label: "Formularios",
+        marker: "▤",
+        metric: `${formAnalyticsSummary.overall_abandon_rate.toFixed(0)}%`,
+        subtitle: "Abandono",
+        tone: "amber",
+      },
+      {
+        id: "intelligence",
+        label: "Intelligence",
+        marker: "✦",
+        metric: intelligenceSummary.high_severity_count.toLocaleString(),
+        subtitle: "Severidad alta",
+        tone: "indigo",
+      },
+    ],
+    [
+      clickHeatmap.total_clicks,
+      formAnalyticsSummary.overall_abandon_rate,
+      funnelResult,
+      intelligenceSummary.high_severity_count,
+      intelligenceSummary.overall_health_score,
+      summary.total_events,
+      uxSignalsSummary.total_signals,
+    ],
+  );
 
   const loadHealth = useCallback(async () => {
     setHealth("checking");
@@ -969,6 +1169,7 @@ export default function Home() {
         nextFormFields,
         nextIntelligenceSummary,
         nextIntelligenceRecommendations,
+        nextFunnelResult,
       ] = await Promise.all([
         fetchJson<EventsSummary>("/v1/events/summary", trimmedToken),
         fetchJson<AnalyticsEvent[]>("/v1/events?limit=25", trimmedToken),
@@ -986,6 +1187,17 @@ export default function Home() {
           "/v1/intelligence/recommendations?limit=100",
           trimmedToken,
         ),
+        fetchJson<FunnelAnalyzeResponse>(
+          "/v1/funnels/analyze",
+          trimmedToken,
+          {
+            method: "POST",
+            headers: {
+              "Content-Type": "application/json",
+            },
+            body: JSON.stringify({ steps: defaultFunnelSteps }),
+          },
+        ),
       ]);
 
       setSummary(nextSummary);
@@ -1002,6 +1214,7 @@ export default function Home() {
       setFormFields(nextFormFields);
       setIntelligenceSummary(nextIntelligenceSummary);
       setIntelligenceRecommendations(nextIntelligenceRecommendations);
+      setFunnelResult(nextFunnelResult);
       setLastUpdated(new Date().toLocaleTimeString());
       return true;
     } catch (nextError) {
@@ -1147,9 +1360,12 @@ export default function Home() {
   useEffect(() => {
     const initializeDashboardTimeout = window.setTimeout(() => {
       const storedToken = window.localStorage.getItem(TOKEN_STORAGE_KEY) ?? "";
+      const storedSidebarPreference =
+        window.localStorage.getItem(SIDEBAR_STORAGE_KEY) === "true";
 
       setTokenInput(storedToken);
       setSavedToken(storedToken);
+      setSidebarCollapsed(storedSidebarPreference);
       void loadHealth();
 
       if (storedToken) {
@@ -1159,6 +1375,28 @@ export default function Home() {
 
     return () => window.clearTimeout(initializeDashboardTimeout);
   }, [loadAnalytics, loadHealth]);
+
+  const closeContextDrawer = useCallback(() => {
+    setSelectedInsight(null);
+  }, []);
+
+  const closeMobileSidebar = useCallback(() => {
+    setMobileSidebarOpen(false);
+  }, []);
+
+  function handleZoneChange(zone: DashboardZone) {
+    setActiveZone(zone);
+    setMobileSidebarOpen(false);
+    setSelectedInsight(null);
+  }
+
+  function handleToggleSidebar() {
+    setSidebarCollapsed((collapsed) => {
+      const nextValue = !collapsed;
+      window.localStorage.setItem(SIDEBAR_STORAGE_KEY, String(nextValue));
+      return nextValue;
+    });
+  }
 
   async function handleSaveToken() {
     const currentToken = tokenInputRef.current?.value ?? tokenInput;
@@ -1198,6 +1436,12 @@ export default function Home() {
     setFormAnalyticsSummary(emptyFormAnalyticsSummary);
     setFormAbandonment([]);
     setFormFields([]);
+    setIntelligenceSummary(emptyIntelligenceSummary);
+    setIntelligenceRecommendations([]);
+    setIntelligenceSeverityFilter("");
+    setIntelligencePageFilter("");
+    setVisibleIntelligenceCount(10);
+    setSelectedInsight(null);
     setEvents([]);
     setSessions([]);
     setRageClicks([]);
@@ -1212,6 +1456,7 @@ export default function Home() {
     setFunnelError(null);
     setError(null);
     setLastUpdated(null);
+    handleZoneChange("overview");
     clearFilters();
   }
 
@@ -1228,93 +1473,155 @@ export default function Home() {
   }
 
   return (
-    <main className="min-h-screen bg-slate-100 text-slate-950">
-      <div className="mx-auto flex w-full max-w-[1440px] flex-col gap-5 px-4 py-5 sm:px-6 lg:px-8 lg:py-7">
-        <header className="flex flex-col gap-5 border-b border-slate-200 pb-6 lg:flex-row lg:items-end lg:justify-between">
-          <div>
-            <p className="mb-2 text-xs font-semibold uppercase tracking-wider text-sky-700">Panel V1.1</p>
-            <h1 className="text-3xl font-semibold tracking-tight sm:text-4xl">UXPulse Analytics</h1>
-            <p className="mt-2 text-sm text-slate-600 sm:text-base">Analítica autohospedada del comportamiento UX</p>
+    <div className="min-h-screen overflow-x-hidden bg-[#f3f6fa] text-slate-950">
+      <SidebarNavigation
+        zones={zoneItems}
+        activeZone={activeZone}
+        onChange={handleZoneChange}
+        collapsed={sidebarCollapsed}
+        onToggleCollapsed={handleToggleSidebar}
+        mobileOpen={mobileSidebarOpen}
+        onCloseMobile={closeMobileSidebar}
+      />
+
+      <div
+        className={`min-h-screen transition-[padding] duration-200 ${
+          sidebarCollapsed ? "md:pl-[72px]" : "md:pl-[220px]"
+        }`}
+      >
+        <header className="sticky top-0 z-30 border-b border-slate-200 bg-white/95 shadow-sm backdrop-blur">
+          <div className="px-3 py-3 sm:px-5 lg:px-6">
+          <div className="flex flex-col gap-4 lg:flex-row lg:items-center lg:justify-between">
+            <div className="min-w-0">
+              <div className="flex items-center gap-3">
+                <button
+                  type="button"
+                  onClick={() => setMobileSidebarOpen(true)}
+                  aria-label="Abrir navegación"
+                  aria-expanded={mobileSidebarOpen}
+                  className="flex h-9 w-9 items-center justify-center rounded-lg border border-slate-200 bg-white text-lg text-slate-700 transition hover:bg-slate-50 md:hidden"
+                >
+                  ☰
+                </button>
+                <span className="flex h-9 w-9 items-center justify-center rounded-lg bg-slate-950 font-mono text-xs font-bold text-white">
+                  UX
+                </span>
+                <div>
+                  <h1 className="text-xl font-semibold text-slate-950 sm:text-2xl">
+                    UXPulse Analytics
+                  </h1>
+                  <p className="text-xs font-medium text-slate-500">UX Command Center</p>
+                </div>
+              </div>
+            </div>
+
+            <div className="grid w-full grid-cols-2 gap-2 sm:flex sm:w-auto sm:flex-wrap sm:items-center">
+              <div className="col-span-2 flex items-center justify-between gap-2 sm:contents">
+                <StatusPill health={health} />
+                {lastUpdated ? (
+                  <span className="text-xs text-slate-500 sm:hidden xl:inline">
+                    Actualizado {lastUpdated}
+                  </span>
+                ) : null}
+              </div>
+              <button
+                type="button"
+                onClick={() => setIsTokenPanelOpen((open) => !open)}
+                aria-expanded={isTokenPanelOpen}
+                aria-controls="token-panel"
+                className={`h-9 min-w-0 rounded-lg border px-3 text-sm font-semibold transition ${
+                  savedToken
+                    ? "border-emerald-200 bg-emerald-50 text-emerald-700 hover:bg-emerald-100"
+                    : "border-amber-200 bg-amber-50 text-amber-800 hover:bg-amber-100"
+                }`}
+              >
+                <span className="sm:hidden">Token</span>
+                <span className="hidden sm:inline">
+                  {savedToken ? "Token configurado" : "Configurar token"}
+                </span>
+              </button>
+              <button
+                type="button"
+                onClick={() => void refreshDashboard()}
+                disabled={isLoading}
+                className="h-9 min-w-0 rounded-lg bg-slate-950 px-3 text-sm font-semibold text-white transition hover:bg-slate-800 disabled:cursor-not-allowed disabled:opacity-60 sm:px-4"
+              >
+                <span className="sm:hidden">
+                  {isLoading ? "Cargando..." : "Actualizar"}
+                </span>
+                <span className="hidden sm:inline">
+                  {isLoading ? "Actualizando..." : "Actualizar datos"}
+                </span>
+              </button>
+            </div>
           </div>
 
-          <div className="flex flex-wrap items-center gap-3">
-            <StatusPill health={health} />
-            <button
-              type="button"
-              onClick={() => void refreshDashboard()}
-              disabled={isLoading}
-              className="h-10 rounded-lg bg-slate-950 px-4 text-sm font-semibold text-white transition hover:bg-slate-800 disabled:cursor-not-allowed disabled:opacity-60"
+          {isTokenPanelOpen ? (
+            <div
+              id="token-panel"
+              className="zone-enter mt-4 border-t border-slate-100 pt-4"
             >
-              {isLoading ? "Actualizando..." : "Actualizar datos"}
-            </button>
+              <div className="flex flex-col gap-3 lg:flex-row lg:items-end">
+                <label className="min-w-0 flex-1">
+                  <span className="mb-1.5 block text-xs font-semibold text-slate-600">
+                    Token de lectura
+                  </span>
+                  <div className="relative">
+                    <input
+                      ref={tokenInputRef}
+                      id="token"
+                      type={isTokenVisible ? "text" : "password"}
+                      value={tokenInput}
+                      onChange={(event) => setTokenInput(event.target.value)}
+                      onInput={(event) => setTokenInput(event.currentTarget.value)}
+                      onKeyDown={(event) => {
+                        if (event.key === "Enter") {
+                          void handleSaveToken();
+                        }
+                      }}
+                      placeholder="Master key o API key de lectura"
+                      autoComplete="off"
+                      className="h-10 w-full rounded-lg border border-slate-300 bg-white py-2 pl-3 pr-24 text-sm text-slate-950 outline-none transition focus:border-sky-500 focus:ring-2 focus:ring-sky-100"
+                    />
+                    <button
+                      type="button"
+                      onClick={handleToggleTokenVisibility}
+                      aria-label={isTokenVisible ? "Ocultar token" : "Mostrar token"}
+                      className="absolute inset-y-1 right-1 rounded-md px-3 text-xs font-semibold text-slate-600 transition hover:bg-slate-100"
+                    >
+                      {isTokenVisible ? "Ocultar" : "Mostrar"}
+                    </button>
+                  </div>
+                </label>
+                <div className="flex gap-2">
+                  <button
+                    type="button"
+                    onClick={() => void handleSaveToken()}
+                    disabled={isLoading}
+                    className="h-10 rounded-lg bg-sky-600 px-4 text-sm font-semibold text-white transition hover:bg-sky-700 disabled:opacity-60"
+                  >
+                    Guardar
+                  </button>
+                  <button
+                    type="button"
+                    onClick={handleClearToken}
+                    disabled={!savedToken && !tokenInput}
+                    className="h-10 rounded-lg border border-slate-300 bg-white px-4 text-sm font-semibold text-slate-700 transition hover:bg-slate-50 disabled:opacity-50"
+                  >
+                    Borrar
+                  </button>
+                </div>
+              </div>
+              <p className="mt-2 text-xs text-slate-500">
+                Se guarda únicamente en el localStorage de este navegador.
+              </p>
+            </div>
+          ) : null}
           </div>
         </header>
 
-        <section className="rounded-lg border border-slate-200 bg-white p-4 shadow-sm sm:p-5">
-          <div className="flex flex-col gap-1 sm:flex-row sm:items-center sm:justify-between">
-            <div>
-              <h2 className="text-sm font-semibold text-slate-900">Token de lectura de analítica</h2>
-              <p className="text-xs text-slate-500">Guardado únicamente en el localStorage de este navegador.</p>
-            </div>
-            {lastUpdated ? (
-              <p className="text-xs text-slate-500">Última actualización: {lastUpdated}</p>
-            ) : null}
-          </div>
-
-          <div className="mt-3 flex flex-col gap-3 lg:flex-row">
-            <div className="relative min-w-0 flex-1">
-              <input
-                ref={tokenInputRef}
-                id="token"
-                type={isTokenVisible ? "text" : "password"}
-                value={tokenInput}
-                onChange={(event) => setTokenInput(event.target.value)}
-                onInput={(event) => setTokenInput(event.currentTarget.value)}
-                onKeyDown={(event) => {
-                  if (event.key === "Enter") {
-                    void handleSaveToken();
-                  }
-                }}
-                placeholder="Pega una master key o una API key de lectura"
-                autoComplete="off"
-                className="h-11 w-full rounded-lg border border-slate-300 bg-white py-2 pl-3 pr-24 text-sm text-slate-950 outline-none transition focus:border-sky-500 focus:ring-2 focus:ring-sky-100"
-              />
-              <button
-                type="button"
-                onClick={handleToggleTokenVisibility}
-                className="absolute inset-y-1 right-1 cursor-pointer rounded-md px-3 text-xs font-semibold text-slate-600 transition hover:bg-slate-100 hover:text-slate-950"
-                aria-label={isTokenVisible ? "Ocultar token" : "Mostrar token"}
-                title={isTokenVisible ? "Ocultar token" : "Mostrar token"}
-              >
-                {isTokenVisible ? "Ocultar" : "Mostrar"}
-              </button>
-            </div>
-            <div className="grid grid-cols-2 gap-3 lg:flex">
-              <button
-                type="button"
-                onClick={() => void handleSaveToken()}
-                disabled={isLoading}
-                className="h-11 cursor-pointer rounded-lg bg-sky-600 px-5 text-sm font-semibold text-white transition hover:bg-sky-700 disabled:cursor-not-allowed disabled:opacity-60"
-              >
-                Guardar token
-              </button>
-              <button
-                type="button"
-                onClick={handleClearToken}
-                className="h-11 cursor-pointer rounded-lg border border-slate-300 bg-white px-5 text-sm font-semibold text-slate-700 transition hover:bg-slate-50"
-              >
-                Borrar token
-              </button>
-            </div>
-          </div>
-
-          {!savedToken && !error ? (
-            <p className="mt-3 text-sm text-slate-500">Pega una master key o una API key de lectura para cargar la analítica.</p>
-          ) : savedToken && !error ? (
-            <p className="mt-3 text-sm text-emerald-700">Token guardado. El acceso a la analítica está listo.</p>
-          ) : null}
-        </section>
-
+        <main className="p-3 sm:p-4 lg:p-6 xl:px-8">
+          <div className="flex min-w-0 flex-col gap-4">
         {isLoading ? (
           <div className="flex items-center gap-3 rounded-lg border border-sky-200 bg-sky-50 px-4 py-3 text-sm text-sky-800">
             <span className="h-4 w-4 animate-spin rounded-full border-2 border-sky-200 border-t-sky-700" />
@@ -1333,6 +1640,319 @@ export default function Home() {
             <p className="mt-2 text-sm">{error.message}</p>
           </section>
         ) : null}
+
+        {activeZone === "overview" ? (
+          <div className="zone-enter space-y-4">
+            <ZoneHeading
+              eyebrow="Estado actual"
+              title="Resumen ejecutivo"
+              description="Qué pasó, dónde está la fricción y qué conviene revisar primero."
+            />
+
+            <section className="grid gap-3 sm:grid-cols-2 xl:grid-cols-4">
+              <CommandMetric
+                label="Estado UX"
+                value={`${intelligenceSummary.overall_health_score}/100`}
+                detail={`Estado UX: ${healthStatus.label} · Puntuación heurística basada en ${intelligenceSummary.total_issues} señales`}
+                tone="blue"
+                marker="HS"
+                emphasis
+              />
+              <CommandMetric
+                label="Actividad"
+                value={`${summary.total_events.toLocaleString()} eventos`}
+                detail={`${sessionsSummary.total_sessions.toLocaleString()} sesiones · ${sessionsSummary.average_events_per_session.toFixed(1)} eventos por sesión`}
+                tone="cyan"
+                marker="AC"
+              />
+              <CommandMetric
+                label="Fricción UX"
+                value={uxSignalsSummary.total_signals.toLocaleString()}
+                detail={`${uxSignalsSummary.high_severity_count} señales de severidad alta`}
+                tone="orange"
+                marker="UX"
+              />
+              <CommandMetric
+                label="Conversión"
+                value={
+                  funnelResult
+                    ? `${funnelResult.overall_conversion_rate.toFixed(1)}%`
+                    : "--"
+                }
+                detail="Funnel page_view → click → custom_event"
+                tone="green"
+                marker="CV"
+              />
+            </section>
+
+            <section className="grid gap-4 xl:grid-cols-[1.35fr_0.65fr]">
+              <DashboardPanel
+                title="Prioridades de UX"
+                description="Top 3 recomendaciones por severidad y fuerza de evidencia"
+                action={
+                  <button
+                    type="button"
+                    onClick={() => handleZoneChange("intelligence")}
+                    className="text-xs font-semibold text-indigo-700 transition hover:text-indigo-900"
+                  >
+                    Abrir Intelligence
+                  </button>
+                }
+              >
+                <div className="divide-y divide-slate-100">
+                  {topPriorities.length ? (
+                    topPriorities.map((priority, index) => (
+                      <button
+                        key={priority.id}
+                        type="button"
+                        onClick={() => setSelectedInsight(priority)}
+                        className="grid w-full gap-3 px-4 py-3 text-left transition hover:bg-slate-50 sm:grid-cols-[36px_minmax(0,1fr)_110px]"
+                        aria-label={`Abrir prioridad ${index + 1}: ${priority.title}`}
+                      >
+                        <span className="flex h-9 w-9 items-center justify-center rounded-md bg-slate-100 text-xs font-bold text-slate-600">
+                          {index + 1}
+                        </span>
+                        <span className="min-w-0">
+                          <span className="flex flex-wrap items-center gap-2">
+                            <span
+                              className={`rounded-full px-2 py-0.5 text-[11px] font-semibold ${severityClasses(priority.severity)}`}
+                            >
+                              {displaySeverity(priority.severity)}
+                            </span>
+                            <span
+                              className={`rounded-full px-2 py-0.5 text-[11px] font-semibold ${issueTypeClasses(priority.type)}`}
+                            >
+                              {issueTypeMarker(priority.type)} · {displayIssueType(priority.type)}
+                            </span>
+                            <span className="truncate text-xs text-slate-500">
+                              {displayPage(priority.page_path)}
+                            </span>
+                          </span>
+                          <span className="mt-1.5 block truncate text-sm font-semibold text-slate-900">
+                            {priority.title}
+                          </span>
+                          <span
+                            className="mt-0.5 block truncate text-xs text-slate-500"
+                            title={priority.evidence[0] || priority.description}
+                          >
+                            Evidencia: {priority.evidence[0] || priority.description}
+                          </span>
+                          <span
+                            className="mt-0.5 block truncate text-xs font-medium text-slate-700"
+                            title={priority.recommendation}
+                          >
+                            Acción: {priority.recommendation}
+                          </span>
+                        </span>
+                        <span className="self-center text-right">
+                          <span className="block text-[10px] font-semibold uppercase tracking-wide text-slate-400">
+                            Fuerza de evidencia
+                          </span>
+                          <span className="mt-1 block text-sm font-semibold tabular-nums text-slate-700">
+                            {Math.round(priority.confidence * 100)}%
+                          </span>
+                        </span>
+                      </button>
+                    ))
+                  ) : (
+                    <div className="p-4">
+                      <EmptyState>
+                        No se detectaron prioridades accionables con los datos actuales.
+                      </EmptyState>
+                    </div>
+                  )}
+                </div>
+              </DashboardPanel>
+
+              <DashboardPanel
+                title="Pulso del producto"
+                description="Distribución rápida de actividad"
+              >
+                <div className="space-y-3 p-4">
+                  {eventsByType.slice(0, 5).map(([type, count]) => {
+                    const percentage = summary.total_events
+                      ? (count / summary.total_events) * 100
+                      : 0;
+                    const width = percentage ? Math.max(4, percentage) : 0;
+
+                    return (
+                      <div key={type}>
+                        <div className="mb-1 flex items-center justify-between gap-3 text-xs">
+                          <span className="truncate font-medium text-slate-700">{type}</span>
+                          <span className="shrink-0 tabular-nums text-slate-500">
+                            {count.toLocaleString()} · {percentage.toFixed(1)}%
+                          </span>
+                        </div>
+                        <div className="h-1.5 overflow-hidden rounded-full bg-slate-100">
+                          <div
+                            className="h-full rounded-full bg-cyan-500 transition-all duration-500"
+                            style={{ width: `${width}%` }}
+                          />
+                        </div>
+                      </div>
+                    );
+                  })}
+                  {!eventsByType.length ? (
+                    <EmptyState>Aún no hay eventos para resumir.</EmptyState>
+                  ) : null}
+                </div>
+              </DashboardPanel>
+            </section>
+
+            <section className="grid gap-4 lg:grid-cols-3">
+              <DashboardPanel
+                title="Funnel principal"
+                description="Conversión y caída por paso"
+                action={
+                  <button
+                    type="button"
+                    onClick={() => handleZoneChange("conversion")}
+                    className="text-xs font-semibold text-emerald-700"
+                  >
+                    Ver funnel
+                  </button>
+                }
+              >
+                <div className="space-y-3 p-4">
+                  {funnelResult?.steps.map((step) => (
+                    <div key={step.step_index}>
+                      <div className="flex items-center justify-between gap-3 text-xs">
+                        <span className="truncate font-medium text-slate-700">
+                          {step.step_index}. {step.event_type}
+                        </span>
+                        <span className="shrink-0 font-semibold tabular-nums text-emerald-700">
+                          {step.sessions_count.toLocaleString()} sesiones · {step.conversion_from_start.toFixed(0)}%
+                        </span>
+                      </div>
+                      <div className="mt-1 h-2 overflow-hidden rounded-full bg-slate-100">
+                        <div
+                          className="h-full rounded-full bg-emerald-500 transition-all duration-500"
+                          style={{ width: `${Math.max(3, step.conversion_from_start)}%` }}
+                        />
+                      </div>
+                    </div>
+                  ))}
+                  {!funnelResult ? (
+                    <EmptyState>No hay análisis de funnel disponible.</EmptyState>
+                  ) : null}
+                </div>
+              </DashboardPanel>
+
+              <DashboardPanel
+                title="Mapa de clics"
+                description={displayPage(activeHeatmapPage)}
+                action={
+                  <button
+                    type="button"
+                    onClick={() => handleZoneChange("heatmaps")}
+                    className="text-xs font-semibold text-fuchsia-700"
+                  >
+                    Explorar mapa
+                  </button>
+                }
+              >
+                <div className="p-4">
+                  {heatmapPreviewPoints.length ? (
+                    <>
+                      <div className="relative aspect-video overflow-hidden rounded-lg border border-fuchsia-100 bg-slate-100">
+                        <div className="absolute inset-0 opacity-70 [background-image:linear-gradient(rgba(100,116,139,.14)_1px,transparent_1px),linear-gradient(90deg,rgba(100,116,139,.14)_1px,transparent_1px)] [background-size:25%_25%]" />
+                        {heatmapPreviewPoints.slice(0, 24).map((point) => (
+                          <span
+                            key={point.event_id}
+                            className="absolute h-2.5 w-2.5 -translate-x-1/2 -translate-y-1/2 rounded-full bg-fuchsia-600 shadow-[0_0_12px_rgba(192,38,211,.55)]"
+                            style={{
+                              left: `${point.x_percent}%`,
+                              top: `${point.y_percent}%`,
+                            }}
+                          />
+                        ))}
+                      </div>
+                      <div className="mt-3 flex items-center justify-between text-xs text-slate-500">
+                        <span>{heatmapView.total_clicks.toLocaleString()} clics</span>
+                        <span>{heatmapPages.length} páginas</span>
+                      </div>
+                    </>
+                  ) : (
+                    <div className="flex h-60 flex-col items-center justify-center rounded-lg border border-dashed border-fuchsia-200 bg-fuchsia-50/40 px-5 text-center">
+                      <span
+                        aria-hidden="true"
+                        className="flex h-10 w-10 items-center justify-center rounded-lg bg-fuchsia-100 font-mono text-xs font-bold text-fuchsia-700"
+                      >
+                        HM
+                      </span>
+                      <p className="mt-3 text-sm font-semibold text-slate-800">
+                        No hay coordenadas completas para esta selección.
+                      </p>
+                      <p className="mt-1 text-xs text-slate-500">
+                        Prueba otra página, otro segmento o el modo Página completa.
+                      </p>
+                      <button
+                        type="button"
+                        onClick={() => handleZoneChange("heatmaps")}
+                        className="mt-4 rounded-lg border border-fuchsia-200 bg-white px-3 py-2 text-xs font-semibold text-fuchsia-700 transition hover:bg-fuchsia-50"
+                      >
+                        Abrir Heatmaps
+                      </button>
+                    </div>
+                  )}
+                </div>
+              </DashboardPanel>
+
+              <DashboardPanel
+                title="Formularios"
+                description="Envíos y abandono"
+                action={
+                  <button
+                    type="button"
+                    onClick={() => handleZoneChange("forms")}
+                    className="text-xs font-semibold text-amber-700"
+                  >
+                    Ver formularios
+                  </button>
+                }
+              >
+                <div className="grid grid-cols-2 gap-3 p-4">
+                  <div className="rounded-lg bg-emerald-50 p-3">
+                    <p className="text-xs font-medium text-emerald-700">Envíos</p>
+                    <p className="mt-1 text-2xl font-semibold text-emerald-800">
+                      {formAnalyticsSummary.total_form_submits}
+                    </p>
+                  </div>
+                  <div className="rounded-lg bg-amber-50 p-3">
+                    <p className="text-xs font-medium text-amber-700">Abandonos</p>
+                    <p className="mt-1 text-2xl font-semibold text-amber-800">
+                      {formAnalyticsSummary.total_form_abandons}
+                    </p>
+                  </div>
+                  <div className="col-span-2 flex items-center justify-between rounded-lg bg-slate-50 p-3">
+                    <p className="text-xs font-medium text-slate-600">Tasa de abandono</p>
+                    <p className="text-lg font-semibold tabular-nums text-amber-700">
+                      {formAnalyticsSummary.overall_abandon_rate.toFixed(1)}%
+                    </p>
+                  </div>
+                  <div className="col-span-2 rounded-lg border border-slate-200 p-3">
+                    <div className="flex items-center justify-between text-xs">
+                      <span className="text-slate-500">Campo con más fricción</span>
+                      <span className="font-semibold text-slate-800">
+                        {mostProblematicField
+                          ? displayFormField(mostProblematicField)
+                          : "Sin datos"}
+                      </span>
+                    </div>
+                  </div>
+                </div>
+              </DashboardPanel>
+            </section>
+          </div>
+        ) : null}
+
+        {activeZone === "behavior" ? (
+          <div className="zone-enter space-y-4">
+            <ZoneHeading
+              eyebrow="Actividad"
+              title="Comportamiento"
+              description="Eventos, páginas, sesiones y navegación reciente en un solo contexto."
+            />
 
         <section className="grid gap-4 sm:grid-cols-2 xl:grid-cols-4">
           <MetricCard
@@ -1425,20 +2045,22 @@ export default function Home() {
             </div>
           </article>
         </section>
-
-        <section className="space-y-4">
-          <div>
-            <h2 className="text-lg font-semibold text-slate-950">UX Intelligence</h2>
-            <p className="mt-1 text-sm text-slate-500">
-              Recomendaciones automáticas basadas en reglas y evidencia observada
-            </p>
           </div>
+        ) : null}
+
+        {activeZone === "intelligence" ? (
+          <section className="zone-enter space-y-4">
+          <ZoneHeading
+            eyebrow="Priorización"
+            title="UX Intelligence"
+            description="Recomendaciones basadas en reglas y evidencia observada, sin presentarlas como predicciones."
+          />
 
           <div className="grid gap-4 sm:grid-cols-2 xl:grid-cols-4">
             <MetricCard
               label="Health score"
               value={`${intelligenceSummary.overall_health_score}/100`}
-              detail={intelligenceSummary.short_summary}
+              detail={`Estado UX: ${healthStatus.label} · Puntuación heurística`}
               accent="emerald"
             />
             <MetricCard
@@ -1472,12 +2094,27 @@ export default function Home() {
             </div>
           ) : null}
 
+          {Object.keys(intelligenceTypeCounts).length ? (
+            <div className="flex flex-wrap gap-2">
+              {Object.entries(intelligenceTypeCounts)
+                .sort(([, first], [, second]) => second - first)
+                .map(([type, count]) => (
+                  <span
+                    key={type}
+                    className="rounded-full border border-indigo-100 bg-indigo-50 px-3 py-1.5 text-xs font-medium text-indigo-800"
+                  >
+                    {count} {count === 1 ? "problema" : "problemas similares"} de {displayIssueType(type)}
+                  </span>
+                ))}
+            </div>
+          ) : null}
+
           <article className="rounded-lg border border-slate-200 bg-white shadow-sm">
             <div className="flex flex-col gap-4 border-b border-slate-200 p-4 sm:p-5 lg:flex-row lg:items-end lg:justify-between">
               <div>
                 <h3 className="text-base font-semibold">Recomendaciones priorizadas</h3>
                 <p className="mt-1 text-sm text-slate-500">
-                  Ordenadas por severidad, confianza y fuerza de la métrica
+                  Top 10 por severidad y fuerza de evidencia
                 </p>
               </div>
 
@@ -1486,7 +2123,10 @@ export default function Home() {
                   Severidad
                   <select
                     value={intelligenceSeverityFilter}
-                    onChange={(event) => setIntelligenceSeverityFilter(event.target.value)}
+                    onChange={(event) => {
+                      setIntelligenceSeverityFilter(event.target.value);
+                      setVisibleIntelligenceCount(10);
+                    }}
                     className="mt-1 h-10 w-full rounded-lg border border-slate-300 bg-white px-3 text-sm font-normal text-slate-800 outline-none focus:border-sky-500 focus:ring-2 focus:ring-sky-100"
                   >
                     <option value="">Todas</option>
@@ -1500,7 +2140,10 @@ export default function Home() {
                   Página
                   <select
                     value={intelligencePageFilter}
-                    onChange={(event) => setIntelligencePageFilter(event.target.value)}
+                    onChange={(event) => {
+                      setIntelligencePageFilter(event.target.value);
+                      setVisibleIntelligenceCount(10);
+                    }}
                     className="mt-1 h-10 w-full min-w-0 rounded-lg border border-slate-300 bg-white px-3 text-sm font-normal text-slate-800 outline-none focus:border-sky-500 focus:ring-2 focus:ring-sky-100"
                   >
                     <option value="">Todas las páginas</option>
@@ -1517,6 +2160,7 @@ export default function Home() {
                   onClick={() => {
                     setIntelligenceSeverityFilter("");
                     setIntelligencePageFilter("");
+                    setVisibleIntelligenceCount(10);
                   }}
                   disabled={!intelligenceSeverityFilter && !intelligencePageFilter}
                   className="h-10 self-end rounded-lg border border-slate-300 bg-white px-4 text-sm font-semibold text-slate-700 transition hover:bg-slate-50 disabled:cursor-not-allowed disabled:opacity-50"
@@ -1527,68 +2171,55 @@ export default function Home() {
             </div>
 
             <div className="divide-y divide-slate-100">
-              {filteredIntelligenceRecommendations.length ? (
-                filteredIntelligenceRecommendations.map((insight) => (
-                  <div key={insight.id} className="p-4 sm:p-5">
-                    <div className="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
-                      <div className="min-w-0">
-                        <div className="flex flex-wrap items-center gap-2">
-                          <span
-                            className={`rounded-full px-2.5 py-1 text-xs font-semibold ${severityClasses(insight.severity)}`}
-                          >
-                            {displaySeverity(insight.severity)}
-                          </span>
-                          <span className="text-xs font-medium text-slate-500">
-                            {displayIssueType(insight.type)}
-                          </span>
-                        </div>
-                        <h4 className="mt-3 text-base font-semibold text-slate-950">
-                          {insight.title}
-                        </h4>
-                        <p className="mt-1 text-sm leading-6 text-slate-600">
-                          {insight.description}
-                        </p>
-                      </div>
-
-                      <div className="shrink-0 text-left sm:text-right">
-                        <p className="text-xs font-medium uppercase tracking-wide text-slate-500">
-                          Confianza
-                        </p>
-                        <p className="mt-1 text-lg font-semibold tabular-nums text-slate-900">
-                          {Math.round(insight.confidence * 100)}%
-                        </p>
-                      </div>
-                    </div>
-
-                    <div className="mt-4 grid gap-4 lg:grid-cols-2">
-                      <div className="rounded-lg bg-sky-50 p-3">
-                        <p className="text-xs font-semibold uppercase tracking-wide text-sky-700">
-                          Recomendación
-                        </p>
-                        <p className="mt-1 text-sm leading-6 text-sky-950">
-                          {insight.recommendation}
-                        </p>
-                      </div>
-
-                      <div className="rounded-lg bg-slate-50 p-3">
-                        <p className="text-xs font-semibold uppercase tracking-wide text-slate-600">
-                          Evidencia
-                        </p>
-                        <div className="mt-2 space-y-1 text-sm text-slate-700">
-                          {insight.evidence.map((evidence) => (
-                            <p key={evidence}>• {evidence}</p>
-                          ))}
-                        </div>
-                      </div>
-                    </div>
-
-                    <div className="mt-3 flex flex-wrap gap-x-5 gap-y-1 text-xs text-slate-500">
-                      <span>Página: {displayPage(insight.page_path)}</span>
-                      <span>Elemento: {insight.element || "No aplica"}</span>
-                      <span>
-                        Métrica: {insight.metric} = {insight.value.toLocaleString()}
+              {visibleIntelligenceRecommendations.length ? (
+                visibleIntelligenceRecommendations.map((insight) => (
+                  <div key={insight.id} className="px-4 py-3 sm:px-5">
+                    <button
+                      type="button"
+                      onClick={() => setSelectedInsight(insight)}
+                      className="grid w-full gap-3 text-left sm:grid-cols-[auto_minmax(0,1fr)_120px]"
+                      aria-haspopup="dialog"
+                      aria-label={`Ver detalle de ${insight.title}`}
+                    >
+                      <span
+                        className={`mt-0.5 rounded-full px-2.5 py-1 text-xs font-semibold ${severityClasses(insight.severity)}`}
+                      >
+                        {displaySeverity(insight.severity)}
                       </span>
-                    </div>
+                      <span className="min-w-0">
+                        <span className="flex flex-wrap items-center gap-2">
+                          <span
+                            className={`rounded-full px-2 py-0.5 text-[11px] font-semibold ${issueTypeClasses(insight.type)}`}
+                          >
+                            {issueTypeMarker(insight.type)} · {displayIssueType(insight.type)}
+                          </span>
+                          <span className="truncate text-xs text-slate-400">
+                            {displayPage(insight.page_path)}
+                          </span>
+                          <span className="truncate text-xs text-slate-400">
+                            {insight.element || "Sin elemento específico"}
+                          </span>
+                        </span>
+                        <span className="mt-1 block truncate text-sm font-semibold text-slate-950">
+                          {insight.title}
+                        </span>
+                        <span className="mt-0.5 block truncate text-xs text-slate-500">
+                          {insight.evidence[0] || insight.description}
+                        </span>
+                      </span>
+                      <span className="self-center text-right">
+                        <span className="block text-[10px] font-semibold uppercase tracking-wide text-slate-400">
+                          Fuerza de evidencia
+                        </span>
+                        <span className="mt-0.5 block text-sm font-semibold tabular-nums text-slate-700">
+                          {Math.round(insight.confidence * 100)}%
+                        </span>
+                        <span className="mt-1 block text-xs font-semibold text-indigo-700">
+                          Ver detalle
+                        </span>
+                      </span>
+                    </button>
+
                   </div>
                 ))
               ) : (
@@ -1601,16 +2232,29 @@ export default function Home() {
                 </div>
               )}
             </div>
+
+            {filteredIntelligenceRecommendations.length > visibleIntelligenceCount ? (
+              <div className="border-t border-slate-100 p-3 text-center">
+                <button
+                  type="button"
+                  onClick={() => setVisibleIntelligenceCount((count) => count + 10)}
+                  className="rounded-lg border border-slate-300 bg-white px-4 py-2 text-sm font-semibold text-slate-700 transition hover:bg-slate-50"
+                >
+                  Ver más recomendaciones
+                </button>
+              </div>
+            ) : null}
           </article>
         </section>
+        ) : null}
 
-        <section className="space-y-4">
-          <div>
-            <h2 className="text-lg font-semibold text-slate-950">Analítica de formularios</h2>
-            <p className="mt-1 text-sm text-slate-500">
-              Inicios, envíos y abandonos calculados sin capturar valores escritos
-            </p>
-          </div>
+        {activeZone === "forms" ? (
+          <section className="zone-enter space-y-4">
+          <ZoneHeading
+            eyebrow="Conversión de formularios"
+            title="Formularios"
+            description="Inicios, envíos y abandono sin capturar valores escritos."
+          />
 
           <div className="grid gap-4 sm:grid-cols-2 xl:grid-cols-5">
             <MetricCard
@@ -1653,7 +2297,7 @@ export default function Home() {
               </p>
             </div>
 
-            <div className="overflow-x-auto">
+            <div className="max-h-[520px] overflow-auto">
               {formAbandonment.length ? (
                 <table className="min-w-[1120px] w-full divide-y divide-slate-200 text-left text-sm">
                   <thead className="bg-slate-50 text-xs uppercase tracking-wide text-slate-500">
@@ -1669,7 +2313,7 @@ export default function Home() {
                     </tr>
                   </thead>
                   <tbody className="divide-y divide-slate-100">
-                    {formAbandonment.map((form) => (
+                    {formAbandonment.slice(0, 10).map((form) => (
                       <tr
                         key={`${form.project_id}-${form.page_path}-${form.form_id || form.form_name || form.form_index}`}
                         className="transition hover:bg-slate-50"
@@ -1736,7 +2380,7 @@ export default function Home() {
               </p>
             </div>
 
-            <div className="overflow-x-auto">
+            <div className="max-h-[520px] overflow-auto">
               {formFields.length ? (
                 <table className="min-w-[1040px] w-full divide-y divide-slate-200 text-left text-sm">
                   <thead className="bg-slate-50 text-xs uppercase tracking-wide text-slate-500">
@@ -1752,7 +2396,7 @@ export default function Home() {
                     </tr>
                   </thead>
                   <tbody className="divide-y divide-slate-100">
-                    {formFields.map((field) => (
+                    {formFields.slice(0, 10).map((field) => (
                       <tr
                         key={`${field.project_id}-${field.page_path}-${field.form_id || field.form_name}-${field.field_id || field.field_name || field.field_index}`}
                         className="transition hover:bg-slate-50"
@@ -1802,10 +2446,12 @@ export default function Home() {
             </div>
           </article>
         </section>
+        ) : null}
 
-        <section className="space-y-4">
-          <div>
-            <h2 className="text-lg font-semibold text-slate-950">Sesiones</h2>
+        {activeZone === "behavior" ? (
+          <section className="zone-enter space-y-4">
+          <div className="border-t border-slate-200 pt-4">
+            <h3 className="text-base font-semibold text-slate-950">Sesiones</h3>
             <p className="mt-1 text-sm text-slate-500">Actividad agrupada por proyecto y sesión del navegador</p>
           </div>
 
@@ -1834,11 +2480,11 @@ export default function Home() {
             <div className="border-b border-slate-200 p-4 sm:p-5">
               <h3 className="text-base font-semibold">Sesiones recientes</h3>
               <p className="mt-1 text-sm text-slate-500">
-                Últimas {sessions.length} sesiones visibles para el token actual
+                Mostrando {visibleSessions.length} de {sessions.length} sesiones cargadas
               </p>
             </div>
 
-            <div className="overflow-x-auto">
+            <div className="max-h-[520px] overflow-auto">
               {sessions.length ? (
                 <table className="min-w-[980px] w-full divide-y divide-slate-200 text-left text-sm">
                   <thead className="bg-slate-50 text-xs uppercase tracking-wide text-slate-500">
@@ -1864,7 +2510,7 @@ export default function Home() {
                     </tr>
                   </thead>
                   <tbody className="divide-y divide-slate-100">
-                    {sessions.map((session) => (
+                    {visibleSessions.map((session) => (
                       <tr key={`${session.project_id}-${session.session_id}`} className="transition hover:bg-slate-50">
                         <td className="max-w-64 px-4 py-3">
                           <p className="truncate font-mono text-xs text-slate-600" title={session.session_id}>
@@ -1902,14 +2548,15 @@ export default function Home() {
             </div>
           </article>
         </section>
+        ) : null}
 
-        <section className="space-y-4">
-          <div>
-            <h2 className="text-lg font-semibold text-slate-950">Señales UX V1</h2>
-            <p className="mt-1 text-sm text-slate-500">
-              Señales de fricción calculadas a partir de los eventos de interacción
-            </p>
-          </div>
+        {activeZone === "friction" ? (
+          <section className="zone-enter space-y-4">
+          <ZoneHeading
+            eyebrow="Monitoreo de problemas"
+            title="Fricción UX"
+            description="Rage Clicks, Dead Clicks y concentraciones de interacción problemática."
+          />
 
           <div className="grid gap-4 sm:grid-cols-2 xl:grid-cols-4">
             <MetricCard
@@ -2063,7 +2710,7 @@ export default function Home() {
               </p>
             </div>
 
-            <div className="overflow-x-auto">
+            <div className="max-h-[520px] overflow-auto">
               {rageClicks.length ? (
                 <table className="min-w-[980px] w-full divide-y divide-slate-200 text-left text-sm">
                   <thead className="bg-slate-50 text-xs uppercase tracking-wide text-slate-500">
@@ -2089,7 +2736,7 @@ export default function Home() {
                     </tr>
                   </thead>
                   <tbody className="divide-y divide-slate-100">
-                    {rageClicks.map((signal) => (
+                    {rageClicks.slice(0, 10).map((signal) => (
                       <tr
                         key={`${signal.project_id}-${signal.session_id}-${signal.first_click_at}`}
                         className="transition hover:bg-slate-50"
@@ -2141,7 +2788,7 @@ export default function Home() {
               </p>
             </div>
 
-            <div className="overflow-x-auto">
+            <div className="max-h-[520px] overflow-auto">
               {deadClicks.length ? (
                 <table className="min-w-[900px] w-full divide-y divide-slate-200 text-left text-sm">
                   <thead className="bg-slate-50 text-xs uppercase tracking-wide text-slate-500">
@@ -2164,7 +2811,7 @@ export default function Home() {
                     </tr>
                   </thead>
                   <tbody className="divide-y divide-slate-100">
-                    {deadClicks.map((signal) => (
+                    {deadClicks.slice(0, 10).map((signal) => (
                       <tr
                         key={`${signal.project_id}-${signal.session_id}-${signal.clicked_at}`}
                         className="transition hover:bg-slate-50"
@@ -2215,19 +2862,21 @@ export default function Home() {
             </div>
           </article>
         </section>
+        ) : null}
 
-        <section className="space-y-4">
-          <div className="flex flex-col gap-3 xl:flex-row xl:items-end xl:justify-between">
-            <div>
-              <h2 className="text-lg font-semibold text-slate-950">Mapa de clics V3</h2>
-              <p className="mt-1 text-sm text-slate-500">
-                Densidad de clics por viewport y página completa según el desplazamiento
-              </p>
-            </div>
-
-            <div className="grid w-full gap-3 sm:grid-cols-3 xl:w-auto">
-              <label className="w-full xl:w-72">
-                <span className="mb-1.5 block text-xs font-semibold uppercase tracking-wide text-slate-500">
+        {activeZone === "heatmaps" ? (
+          <section className="zone-enter grid grid-cols-1 gap-4 xl:grid-cols-10">
+          <div className="xl:col-span-10">
+            <ZoneHeading
+              eyebrow="Distribución espacial"
+              title="Click Heatmaps"
+              description="Explora la distribución espacial de las interacciones."
+            />
+          </div>
+          <div className="order-1 rounded-lg border border-slate-200 bg-white p-3 shadow-sm xl:col-span-10">
+            <div className="grid gap-3 md:grid-cols-[minmax(260px,1.4fr)_minmax(180px,.8fr)_minmax(280px,1fr)] md:items-end">
+              <label className="min-w-0">
+                <span className="mb-1.5 block text-xs font-semibold text-slate-500">
                   Página
                 </span>
                 <select
@@ -2248,9 +2897,9 @@ export default function Home() {
                 </select>
               </label>
 
-              <label className="w-full xl:w-52">
-                <span className="mb-1.5 block text-xs font-semibold uppercase tracking-wide text-slate-500">
-                  Segmento de pantalla
+              <label className="min-w-0">
+                <span className="mb-1.5 block text-xs font-semibold text-slate-500">
+                  Segmento
                 </span>
                 <select
                   value={heatmapSegment}
@@ -2267,9 +2916,9 @@ export default function Home() {
                 </select>
               </label>
 
-              <div className="w-full xl:w-56">
-                <span className="mb-1.5 block text-xs font-semibold uppercase tracking-wide text-slate-500">
-                  Modo del mapa
+              <div className="min-w-0">
+                <span className="mb-1.5 block text-xs font-semibold text-slate-500">
+                  Modo
                 </span>
                 <div className="grid h-10 grid-cols-2 rounded-lg border border-slate-300 bg-white p-1">
                   <button
@@ -2301,7 +2950,7 @@ export default function Home() {
             </div>
           </div>
 
-          <div className="grid gap-4 sm:grid-cols-2 xl:grid-cols-4">
+          <div className="order-2 grid gap-3 sm:grid-cols-2 xl:col-span-10 xl:grid-cols-4">
             <MetricCard
               label="Clics filtrados"
               value={heatmapView.total_clicks.toLocaleString()}
@@ -2347,7 +2996,7 @@ export default function Home() {
           </div>
 
           {heatmapMode === "full_page" ? (
-            <div className="grid gap-4 sm:grid-cols-2 xl:grid-cols-4">
+            <div className="order-3 grid gap-3 sm:grid-cols-2 xl:col-span-10 xl:grid-cols-4">
               <MetricCard
                 label="Altura mediana del documento"
                 value={documentHeight !== null ? `${Math.round(documentHeight).toLocaleString()} px` : "Desconocida"}
@@ -2385,7 +3034,7 @@ export default function Home() {
 
           {heatmapError ? (
             <div
-              className="rounded-lg border border-rose-200 bg-rose-50 px-4 py-3 text-sm text-rose-800"
+              className="order-4 rounded-lg border border-rose-200 bg-rose-50 px-4 py-3 text-sm text-rose-800 xl:col-span-10"
               role="alert"
             >
               <span className="font-semibold">
@@ -2395,16 +3044,16 @@ export default function Home() {
             </div>
           ) : null}
 
-          <div className="grid gap-4 xl:grid-cols-3">
-            <article className="rounded-lg border border-slate-200 bg-white p-5 shadow-sm">
-              <h3 className="text-base font-semibold">Clics por página</h3>
-              <p className="mt-1 text-sm text-slate-500">Páginas ordenadas por coordenadas de clic válidas</p>
+          <div className="order-6 flex flex-col gap-4 xl:col-span-3">
+            <article className="rounded-lg border border-slate-200 bg-white p-4 shadow-sm">
+              <h3 className="text-sm font-semibold">Top páginas</h3>
+              <p className="mt-0.5 text-xs text-slate-500">Coordenadas válidas</p>
 
-              <div className="mt-5 divide-y divide-slate-100">
+              <div className="mt-3 divide-y divide-slate-100">
                 {heatmapPages.length ? (
-                  heatmapPages.map(([page, count], index) => (
-                    <div key={page} className="flex items-center gap-3 py-3 first:pt-0 last:pb-0">
-                      <span className="flex h-7 w-7 shrink-0 items-center justify-center rounded-full bg-slate-100 text-xs font-semibold text-slate-500">
+                  heatmapPages.slice(0, 5).map(([page, count], index) => (
+                    <div key={page} className="flex items-center gap-2.5 py-2.5 first:pt-0 last:pb-0">
+                      <span className="flex h-6 w-6 shrink-0 items-center justify-center rounded-md bg-slate-100 text-[11px] font-semibold text-slate-500">
                         {index + 1}
                       </span>
                       <span
@@ -2424,15 +3073,15 @@ export default function Home() {
               </div>
             </article>
 
-            <article className="rounded-lg border border-slate-200 bg-white p-5 shadow-sm">
-              <h3 className="text-base font-semibold">Clics por elemento</h3>
-              <p className="mt-1 text-sm text-slate-500">Elementos ordenados por coordenadas de clic válidas</p>
+            <article className="rounded-lg border border-slate-200 bg-white p-4 shadow-sm">
+              <h3 className="text-sm font-semibold">Top elementos</h3>
+              <p className="mt-0.5 text-xs text-slate-500">Objetivos con más interacción</p>
 
-              <div className="mt-5 divide-y divide-slate-100">
+              <div className="mt-3 divide-y divide-slate-100">
                 {heatmapElements.length ? (
-                  heatmapElements.map(([element, count], index) => (
-                    <div key={element} className="flex items-center gap-3 py-3 first:pt-0 last:pb-0">
-                      <span className="flex h-7 w-7 shrink-0 items-center justify-center rounded-full bg-slate-100 text-xs font-semibold text-slate-500">
+                  heatmapElements.slice(0, 5).map(([element, count], index) => (
+                    <div key={element} className="flex items-center gap-2.5 py-2.5 first:pt-0 last:pb-0">
+                      <span className="flex h-6 w-6 shrink-0 items-center justify-center rounded-md bg-slate-100 text-[11px] font-semibold text-slate-500">
                         {index + 1}
                       </span>
                       <span
@@ -2452,19 +3101,19 @@ export default function Home() {
               </div>
             </article>
 
-            <article className="rounded-lg border border-slate-200 bg-white p-5 shadow-sm">
-              <h3 className="text-base font-semibold">Clics por viewport</h3>
-              <p className="mt-1 text-sm text-slate-500">
-                Segmentos por ancho de dispositivo en todas las páginas
+            <article className="rounded-lg border border-slate-200 bg-white p-4 shadow-sm">
+              <h3 className="text-sm font-semibold">Dispositivos</h3>
+              <p className="mt-0.5 text-xs text-slate-500">
+                Distribución por viewport
               </p>
 
-              <div className="mt-5 divide-y divide-slate-100">
+              <div className="mt-3 divide-y divide-slate-100">
                 {heatmapSegments.map(([segment, count], index) => (
                   <div
                     key={segment}
-                    className="flex items-center gap-3 py-3 first:pt-0 last:pb-0"
+                    className="flex items-center gap-2.5 py-2.5 first:pt-0 last:pb-0"
                   >
-                    <span className="flex h-7 w-7 shrink-0 items-center justify-center rounded-full bg-slate-100 text-xs font-semibold text-slate-500">
+                    <span className="flex h-6 w-6 shrink-0 items-center justify-center rounded-md bg-slate-100 text-[11px] font-semibold text-slate-500">
                       {index + 1}
                     </span>
                     <span className="min-w-0 flex-1 truncate text-sm font-medium text-slate-700">
@@ -2479,7 +3128,7 @@ export default function Home() {
             </article>
           </div>
 
-          <article className="rounded-lg border border-slate-200 bg-white shadow-sm">
+          <article className="order-5 self-start rounded-lg border border-slate-200 bg-white shadow-sm xl:col-span-7">
             <div className="flex flex-col gap-1 border-b border-slate-200 p-4 sm:flex-row sm:items-end sm:justify-between sm:p-5">
               <div>
                 <h3 className="text-base font-semibold">Vista previa del mapa</h3>
@@ -2497,7 +3146,8 @@ export default function Home() {
             <div className="p-4 sm:p-5">
               {heatmapView.total_clicks ? (
                 heatmapMode === "viewport" ? (
-                  <div className="relative aspect-video w-full overflow-hidden rounded-lg border border-slate-300 bg-slate-50">
+                  heatmapPreviewPoints.length ? (
+                  <div className="relative h-[clamp(420px,34vw,600px)] w-full overflow-hidden rounded-lg border border-slate-300 bg-slate-50">
                     {[25, 50, 75].map((position) => (
                       <div
                         key={`vertical-${position}`}
@@ -2537,13 +3187,29 @@ export default function Home() {
                         title={`${displayElementRanking(point.element_id || "coordinate_zone")} en ${point.x_percent}%, ${point.y_percent}%`}
                       />
                     ))}
-                    {!heatmapPreviewPoints.length ? (
-                      <div className="absolute inset-0 flex items-center justify-center px-4 text-center text-sm font-medium text-slate-500">
-                        Los clics de este segmento no tienen un viewport completo.
-                      </div>
-                    ) : null}
                   </div>
+                  ) : (
+                    <div className="flex min-h-[300px] flex-col items-center justify-center rounded-lg border border-dashed border-fuchsia-200 bg-fuchsia-50/40 px-6 text-center">
+                      <span className="flex h-10 w-10 items-center justify-center rounded-lg bg-fuchsia-100 font-mono text-xs font-bold text-fuchsia-700">
+                        HM
+                      </span>
+                      <p className="mt-4 text-base font-semibold text-slate-900">
+                        No hay datos de viewport para esta selección
+                      </p>
+                      <p className="mt-1 max-w-md text-sm text-slate-500">
+                        Prueba otra página, otro segmento o cambia al modo Página completa.
+                      </p>
+                      <button
+                        type="button"
+                        onClick={() => setHeatmapMode("full_page")}
+                        className="mt-4 rounded-lg bg-fuchsia-600 px-4 py-2 text-sm font-semibold text-white transition hover:bg-fuchsia-700"
+                      >
+                        Cambiar a Página completa
+                      </button>
+                    </div>
+                  )
                 ) : (
+                  documentPreviewPoints.length ? (
                   <div className="max-h-[720px] overflow-y-auto rounded-lg border border-slate-300 bg-slate-100 p-3 sm:p-5">
                     <div className="relative mx-auto h-[1080px] w-full max-w-2xl overflow-hidden border border-slate-300 bg-white shadow-sm">
                       {[25, 50, 75].map((position) => (
@@ -2599,22 +3265,44 @@ export default function Home() {
                           title={`${displayElementRanking(point.element_id || "coordinate_zone")} al ${Math.round(point.normalized_document_y * 100)}% de profundidad`}
                         />
                       ))}
-                      {!documentPreviewPoints.length ? (
-                        <div className="absolute inset-0 flex items-center justify-center px-4 text-center text-sm font-medium text-slate-500">
-                          Los clics de este segmento no tienen geometría suficiente para ubicarlos en la página completa.
-                        </div>
-                      ) : null}
                     </div>
                   </div>
+                  ) : (
+                    <div className="flex min-h-[300px] flex-col items-center justify-center rounded-lg border border-dashed border-fuchsia-200 bg-fuchsia-50/40 px-6 text-center">
+                      <span className="flex h-10 w-10 items-center justify-center rounded-lg bg-fuchsia-100 font-mono text-xs font-bold text-fuchsia-700">
+                        FP
+                      </span>
+                      <p className="mt-4 text-base font-semibold text-slate-900">
+                        No hay geometría de página completa
+                      </p>
+                      <p className="mt-1 max-w-md text-sm text-slate-500">
+                        Los clics de esta selección no incluyen suficiente información de scroll y documento.
+                      </p>
+                      <button
+                        type="button"
+                        onClick={() => setHeatmapMode("viewport")}
+                        className="mt-4 rounded-lg border border-slate-300 bg-white px-4 py-2 text-sm font-semibold text-slate-700 transition hover:bg-slate-50"
+                      >
+                        Volver a Viewport
+                      </button>
+                    </div>
+                  )
                 )
               ) : (
-                <EmptyState>No hay puntos de clic disponibles para esta página.</EmptyState>
+                <div className="flex min-h-[300px] flex-col items-center justify-center rounded-lg border border-dashed border-slate-300 bg-slate-50 px-6 text-center">
+                  <p className="text-base font-semibold text-slate-900">
+                    No hay coordenadas completas para esta selección
+                  </p>
+                  <p className="mt-1 max-w-md text-sm text-slate-500">
+                    Selecciona otra página o segmento para explorar sus interacciones.
+                  </p>
+                </div>
               )}
             </div>
           </article>
 
           {heatmapMode === "full_page" ? (
-            <article className="rounded-lg border border-slate-200 bg-white p-5 shadow-sm">
+            <article className="order-7 rounded-lg border border-slate-200 bg-white p-5 shadow-sm xl:col-span-10">
               <div className="flex flex-col gap-1 sm:flex-row sm:items-end sm:justify-between">
                 <div>
                   <h3 className="text-base font-semibold">Clics por profundidad de desplazamiento</h3>
@@ -2653,7 +3341,7 @@ export default function Home() {
             </article>
           ) : null}
 
-          <article className="rounded-lg border border-slate-200 bg-white shadow-sm">
+          <article className="order-8 rounded-lg border border-slate-200 bg-white shadow-sm xl:col-span-10">
             <div className="border-b border-slate-200 p-4 sm:p-5">
               <h3 className="text-base font-semibold">Puntos recientes del mapa</h3>
               <p className="mt-1 text-sm text-slate-500">
@@ -2661,7 +3349,7 @@ export default function Home() {
               </p>
             </div>
 
-            <div className="overflow-x-auto">
+            <div className="max-h-[520px] overflow-auto">
               {heatmapView.points.length ? (
                 <table className="min-w-[980px] w-full divide-y divide-slate-200 text-left text-sm">
                   <thead className="bg-slate-50 text-xs uppercase tracking-wide text-slate-500">
@@ -2676,7 +3364,7 @@ export default function Home() {
                     </tr>
                   </thead>
                   <tbody className="divide-y divide-slate-100">
-                    {heatmapView.points.map((point) => (
+                    {heatmapView.points.slice(0, 10).map((point) => (
                       <tr key={point.event_id} className="transition hover:bg-slate-50">
                         <td className="max-w-56 px-4 py-3">
                           <p
@@ -2728,11 +3416,18 @@ export default function Home() {
             </div>
           </article>
         </section>
+        ) : null}
 
-        <section className="space-y-4">
+        {activeZone === "conversion" ? (
+          <section className="zone-enter space-y-4">
+          <ZoneHeading
+            eyebrow="Flujo principal"
+            title="Conversión"
+            description="Progresión ordenada y drop-off entre los pasos del funnel."
+          />
           <div className="flex flex-col gap-3 sm:flex-row sm:items-end sm:justify-between">
             <div>
-              <h2 className="text-lg font-semibold text-slate-950">Embudos V1</h2>
+              <h3 className="text-base font-semibold text-slate-950">Funnel principal</h3>
               <p className="mt-1 text-sm text-slate-500">
                 Conversión ordenada entre sesiones usando los eventos existentes
               </p>
@@ -2866,14 +3561,16 @@ export default function Home() {
             )}
           </article>
         </section>
+        ) : null}
 
-        <section className="rounded-lg border border-slate-200 bg-white shadow-sm">
+        {activeZone === "behavior" ? (
+        <section className="zone-enter rounded-lg border border-slate-200 bg-white shadow-sm">
           <div className="border-b border-slate-200 p-4 sm:p-5">
             <div className="flex flex-col gap-2 sm:flex-row sm:items-end sm:justify-between">
               <div>
                 <h2 className="text-base font-semibold">Eventos recientes</h2>
                 <p className="mt-1 text-sm text-slate-500">
-                  Mostrando {filteredEvents.length} de {events.length} eventos cargados
+                  Mostrando {visibleFilteredEvents.length} de {filteredEvents.length} eventos filtrados
                 </p>
               </div>
               <button
@@ -2938,7 +3635,7 @@ export default function Home() {
             </div>
           </div>
 
-          <div className="overflow-x-auto">
+          <div className="max-h-[560px] overflow-auto">
             {filteredEvents.length ? (
               <table className="min-w-[960px] w-full divide-y divide-slate-200 text-left text-sm">
                 <thead className="bg-slate-50 text-xs uppercase tracking-wide text-slate-500">
@@ -2961,7 +3658,7 @@ export default function Home() {
                   </tr>
                 </thead>
                 <tbody className="divide-y divide-slate-100">
-                  {filteredEvents.map((event) => {
+                  {visibleFilteredEvents.map((event) => {
                     const page = displayPage(event.page_path || event.page_url);
                     const element = event.element_text || event.element_id || "Sin elemento";
 
@@ -3006,7 +3703,103 @@ export default function Home() {
             )}
           </div>
         </section>
+        ) : null}
+          </div>
+        </main>
       </div>
-    </main>
+
+      <ContextDrawer
+        open={Boolean(selectedInsight)}
+        title={selectedInsight?.title ?? "Detalle de recomendación"}
+        eyebrow="UX Intelligence"
+        onClose={closeContextDrawer}
+      >
+        {selectedInsight ? (
+          <div className="space-y-5">
+            <div className="flex flex-wrap items-center gap-2">
+              <span
+                className={`rounded-full px-2.5 py-1 text-xs font-semibold ${severityClasses(selectedInsight.severity)}`}
+              >
+                {displaySeverity(selectedInsight.severity)}
+              </span>
+              <span
+                className={`rounded-full px-2.5 py-1 text-xs font-semibold ${issueTypeClasses(selectedInsight.type)}`}
+              >
+                {issueTypeMarker(selectedInsight.type)} · {displayIssueType(selectedInsight.type)}
+              </span>
+            </div>
+
+            <dl className="grid grid-cols-2 gap-3 rounded-lg border border-slate-200 bg-slate-50 p-4 text-sm">
+              <div>
+                <dt className="text-xs font-medium text-slate-500">Página</dt>
+                <dd className="mt-1 break-words font-semibold text-slate-800">
+                  {displayPage(selectedInsight.page_path)}
+                </dd>
+              </div>
+              <div>
+                <dt className="text-xs font-medium text-slate-500">Elemento</dt>
+                <dd className="mt-1 break-words font-semibold text-slate-800">
+                  {selectedInsight.element || "No aplica"}
+                </dd>
+              </div>
+              <div>
+                <dt className="text-xs font-medium text-slate-500">Métrica</dt>
+                <dd className="mt-1 font-semibold text-slate-800">
+                  {selectedInsight.metric}: {selectedInsight.value.toLocaleString()}
+                </dd>
+              </div>
+              <div>
+                <dt className="text-xs font-medium text-slate-500">Fuerza de evidencia</dt>
+                <dd className="mt-1 font-semibold tabular-nums text-slate-800">
+                  {Math.round(selectedInsight.confidence * 100)}%
+                </dd>
+              </div>
+            </dl>
+
+            <section>
+              <h3 className="text-xs font-semibold uppercase tracking-wide text-slate-500">
+                Señal detectada
+              </h3>
+              <p className="mt-2 text-sm leading-6 text-slate-700">
+                {selectedInsight.description}
+              </p>
+            </section>
+
+            {selectedInsight.evidence.length ? (
+              <section>
+                <h3 className="text-xs font-semibold uppercase tracking-wide text-slate-500">
+                  Evidencia observada
+                </h3>
+                <ul className="mt-2 space-y-2 rounded-lg bg-slate-50 p-4 text-sm leading-6 text-slate-700">
+                  {selectedInsight.evidence.map((evidence) => (
+                    <li key={evidence}>• {evidence}</li>
+                  ))}
+                </ul>
+              </section>
+            ) : null}
+
+            <section className="rounded-lg border border-indigo-100 bg-indigo-50 p-4">
+              <h3 className="text-xs font-semibold uppercase tracking-wide text-indigo-700">
+                Recomendación
+              </h3>
+              <p className="mt-2 text-sm leading-6 text-indigo-950">
+                {selectedInsight.recommendation}
+              </p>
+            </section>
+
+            <button
+              type="button"
+              onClick={() => {
+                closeContextDrawer();
+                handleZoneChange("intelligence");
+              }}
+              className="w-full rounded-lg bg-indigo-600 px-4 py-2.5 text-sm font-semibold text-white transition hover:bg-indigo-700"
+            >
+              Abrir Intelligence
+            </button>
+          </div>
+        ) : null}
+      </ContextDrawer>
+    </div>
   );
 }
